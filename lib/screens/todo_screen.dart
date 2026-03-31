@@ -29,17 +29,21 @@ class SubTask {
 
 class StudyQuestion {
   String id, question;
-  String? answer, difficulty, topic, userAnswer;
+  String? answer, difficulty, topic, userAnswer, feedback;
   bool answered;
+  bool? correct; // null = not checked, true = correct, false = wrong
   StudyQuestion({required this.id, required this.question, this.answer,
-      this.difficulty, this.topic, this.userAnswer, this.answered = false});
+      this.difficulty, this.topic, this.userAnswer, this.answered = false,
+      this.correct, this.feedback});
   Map<String, dynamic> toJson() => {'id': id, 'question': question,
       'answer': answer, 'difficulty': difficulty, 'topic': topic,
-      'userAnswer': userAnswer, 'answered': answered};
+      'userAnswer': userAnswer, 'answered': answered,
+      'correct': correct, 'feedback': feedback};
   factory StudyQuestion.fromJson(Map<String, dynamic> j) => StudyQuestion(
       id: j['id'], question: j['question'], answer: j['answer'],
       difficulty: j['difficulty'], topic: j['topic'],
-      userAnswer: j['userAnswer'], answered: j['answered'] ?? false);
+      userAnswer: j['userAnswer'], answered: j['answered'] ?? false,
+      correct: j['correct'], feedback: j['feedback']);
 }
 
 class StudyTask {
@@ -875,9 +879,61 @@ RULES:
           onAnswer: (ans) async {
             setState(() { _t.questions[i].userAnswer = ans; _t.questions[i].answered = true; });
             await _save();
+            // AI checks if the answer is correct
+            _checkAnswer(i, ans);
           }),
       )),
     ]);
+  }
+
+  Future<void> _checkAnswer(int index, String userAnswer) async {
+    final q = _t.questions[index];
+    if (q.answer == null || q.answer!.isEmpty) return;
+    try {
+      final api = ref.read(apiServiceProvider);
+      final result = await api.callLLM(
+        prompt: 'Question: ${q.question}\n\nCorrect Answer: ${q.answer}\n\nStudent\'s Answer: $userAnswer',
+        systemInstruction: '''You are an answer checker. Compare the student's answer to the correct answer.
+Determine if the student's answer is correct, partially correct, or wrong.
+
+RESPOND ONLY in this exact format (nothing else):
+VERDICT: CORRECT or WRONG or PARTIAL
+FEEDBACK: One sentence explaining why.
+
+Rules:
+- CORRECT: Student demonstrates understanding of the core concept, even if wording differs.
+- PARTIAL: Some correct elements but missing key parts.
+- WRONG: Answer is incorrect, irrelevant, or nonsensical.
+- Be strict but fair. Random letters/numbers = WRONG.
+- A single word that matches the concept = CORRECT.
+''',
+      );
+      if (!mounted) return;
+      final lines = result.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+      bool? isCorrect;
+      String feedback = '';
+      for (final line in lines) {
+        if (line.toUpperCase().contains('VERDICT')) {
+          if (line.toUpperCase().contains('CORRECT') && !line.toUpperCase().contains('WRONG') && !line.toUpperCase().contains('PARTIAL')) {
+            isCorrect = true;
+          } else if (line.toUpperCase().contains('PARTIAL')) {
+            isCorrect = false; // treat partial as wrong
+          } else {
+            isCorrect = false;
+          }
+        }
+        if (line.toUpperCase().startsWith('FEEDBACK:')) {
+          feedback = line.substring(9).trim();
+        }
+      }
+      setState(() {
+        _t.questions[index].correct = isCorrect ?? false;
+        _t.questions[index].feedback = feedback.isNotEmpty ? feedback : (isCorrect == true ? 'Correct!' : 'Incorrect answer.');
+      });
+      await _save();
+    } catch (_) {
+      // If AI check fails, just leave as unevaluated
+    }
   }
 
   // ── PROGRESS TAB ────────────────────────────────────────
@@ -969,11 +1025,29 @@ class _QuestionCardState extends State<_QuestionCard> {
   Widget build(BuildContext context) {
     final q = widget.q;
     final diffColor = q.difficulty == 'hard' ? Colors.red.shade400 : q.difficulty == 'medium' ? AppTheme.accentOrange : AppTheme.accentGreen;
+
+    // Determine card color based on correctness
+    Color cardBg = AppTheme.cardDark;
+    Color cardBorder = AppTheme.cardBorder;
+    if (q.answered && q.correct != null) {
+      if (q.correct!) {
+        cardBg = AppTheme.accentGreen.withOpacity(0.05);
+        cardBorder = AppTheme.accentGreen.withOpacity(0.3);
+      } else {
+        cardBg = Colors.red.withOpacity(0.05);
+        cardBorder = Colors.red.withOpacity(0.3);
+      }
+    } else if (q.answered) {
+      // Answered but AI hasn't checked yet → neutral
+      cardBg = AppTheme.accentOrange.withOpacity(0.04);
+      cardBorder = AppTheme.accentOrange.withOpacity(0.2);
+    }
+
     return AnimatedContainer(duration: 200.ms, padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: q.answered ? AppTheme.accentGreen.withOpacity(0.05) : AppTheme.cardDark,
+        color: cardBg,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: q.answered ? AppTheme.accentGreen.withOpacity(0.3) : AppTheme.cardBorder),
+        border: Border.all(color: cardBorder),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
@@ -984,7 +1058,8 @@ class _QuestionCardState extends State<_QuestionCard> {
               decoration: BoxDecoration(color: diffColor.withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
               child: Text(q.difficulty!, style: TextStyle(fontSize: 10, color: diffColor, fontWeight: FontWeight.w600))),
           const Spacer(),
-          if (q.answered) const Icon(Icons.check_circle, size: 16, color: AppTheme.accentGreen),
+          // Show correct/wrong/checking indicator
+          if (q.answered) ..._buildStatusIcon(q),
         ]),
         const SizedBox(height: 10),
         Text(_clean(q.question), style: const TextStyle(fontSize: 14, height: 1.5, color: AppTheme.textPrimary)),
@@ -1009,11 +1084,52 @@ class _QuestionCardState extends State<_QuestionCard> {
           ]),
         ],
 
-        // ── Show user's answer after submission ──
+        // ── Show user's answer + correctness feedback after submission ──
         if (q.answered && q.userAnswer != null) ...[
           const SizedBox(height: 8),
-          Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: AppTheme.surfaceDark, borderRadius: BorderRadius.circular(8)),
-              child: Text('Your answer: ${q.userAnswer}', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: q.correct == null
+                  ? AppTheme.accentOrange.withOpacity(0.06)
+                  : q.correct!
+                      ? AppTheme.accentGreen.withOpacity(0.08)
+                      : Colors.red.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: q.correct == null
+                    ? AppTheme.accentOrange.withOpacity(0.2)
+                    : q.correct!
+                        ? AppTheme.accentGreen.withOpacity(0.3)
+                        : Colors.red.withOpacity(0.3),
+              ),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(
+                  q.correct == null ? Icons.hourglass_top_rounded
+                      : q.correct! ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                  size: 14,
+                  color: q.correct == null ? AppTheme.accentOrange
+                      : q.correct! ? AppTheme.accentGreen : Colors.red.shade400,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  q.correct == null ? 'Checking...' : q.correct! ? 'Correct!' : 'Incorrect',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                      color: q.correct == null ? AppTheme.accentOrange
+                          : q.correct! ? AppTheme.accentGreen : Colors.red.shade400),
+                ),
+              ]),
+              const SizedBox(height: 4),
+              Text('Your answer: ${q.userAnswer}', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+              if (q.feedback != null && q.feedback!.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(q.feedback!, style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic,
+                    color: q.correct == true ? AppTheme.accentGreen.withOpacity(0.8) : AppTheme.textSecondary)),
+              ],
+            ]),
+          ),
         ],
 
         // ── Answer reveal button (always visible when answer exists) ──
@@ -1080,7 +1196,7 @@ class _QuestionCardState extends State<_QuestionCard> {
                     color: AppTheme.accentCyan.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Text('✅ Model Answer', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.accentCyan)),
+                  child: const Text('📖 Model Answer', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.accentCyan)),
                 ),
               ]),
               const SizedBox(height: 8),
@@ -1090,5 +1206,18 @@ class _QuestionCardState extends State<_QuestionCard> {
         ],
       ]),
     );
+  }
+
+  List<Widget> _buildStatusIcon(StudyQuestion q) {
+    if (q.correct == null) {
+      // AI is still checking
+      return [
+        const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accentOrange)),
+      ];
+    } else if (q.correct!) {
+      return [const Icon(Icons.check_circle, size: 16, color: AppTheme.accentGreen)];
+    } else {
+      return [Icon(Icons.cancel, size: 16, color: Colors.red.shade400)];
+    }
   }
 }
