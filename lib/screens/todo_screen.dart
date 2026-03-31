@@ -961,6 +961,10 @@ class _QuestionCard extends StatefulWidget {
 class _QuestionCardState extends State<_QuestionCard> {
   bool _showAns = false;
   final _ctrl = TextEditingController();
+
+  /// Strip markdown bold markers (**text** → text)
+  String _clean(String s) => s.replaceAll(RegExp(r'\*{1,2}'), '').trim();
+
   @override
   Widget build(BuildContext context) {
     final q = widget.q;
@@ -983,7 +987,9 @@ class _QuestionCardState extends State<_QuestionCard> {
           if (q.answered) const Icon(Icons.check_circle, size: 16, color: AppTheme.accentGreen),
         ]),
         const SizedBox(height: 10),
-        Text(q.question, style: const TextStyle(fontSize: 14, height: 1.5, color: AppTheme.textPrimary)),
+        Text(_clean(q.question), style: const TextStyle(fontSize: 14, height: 1.5, color: AppTheme.textPrimary)),
+
+        // ── User answer input (only when not answered) ──
         if (!q.answered) ...[
           const SizedBox(height: 10),
           TextField(controller: _ctrl, maxLines: 2, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
@@ -993,8 +999,6 @@ class _QuestionCardState extends State<_QuestionCard> {
                   enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.cardBorder)))),
           const SizedBox(height: 8),
           Row(children: [
-            if (q.answer != null) TextButton(onPressed: () => setState(() => _showAns = !_showAns),
-                child: Text(_showAns ? 'Hide Answer' : 'Show Answer', style: const TextStyle(fontSize: 12, color: AppTheme.accentCyan))),
             const Spacer(),
             GestureDetector(
               onTap: () { if (_ctrl.text.trim().isNotEmpty) widget.onAnswer(_ctrl.text.trim()); },
@@ -1003,21 +1007,86 @@ class _QuestionCardState extends State<_QuestionCard> {
                   child: const Text('Submit', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.black))),
             ),
           ]),
-        ] else if (q.userAnswer != null) ...[
+        ],
+
+        // ── Show user's answer after submission ──
+        if (q.answered && q.userAnswer != null) ...[
           const SizedBox(height: 8),
           Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: AppTheme.surfaceDark, borderRadius: BorderRadius.circular(8)),
               child: Text('Your answer: ${q.userAnswer}', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
         ],
+
+        // ── Answer reveal button (always visible when answer exists) ──
+        if (q.answer != null && q.answer!.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: () => setState(() => _showAns = !_showAns),
+            child: AnimatedContainer(
+              duration: 200.ms,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: _showAns
+                    ? AppTheme.accentCyan.withOpacity(0.08)
+                    : AppTheme.accentViolet.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: _showAns
+                      ? AppTheme.accentCyan.withOpacity(0.3)
+                      : AppTheme.accentViolet.withOpacity(0.3),
+                ),
+              ),
+              child: Row(children: [
+                Icon(
+                  _showAns ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                  size: 16,
+                  color: _showAns ? AppTheme.accentCyan : AppTheme.accentViolet,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _showAns ? 'Hide Answer' : 'Tap to Reveal Answer',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: _showAns ? AppTheme.accentCyan : AppTheme.accentViolet,
+                  ),
+                ),
+                const Spacer(),
+                Icon(
+                  _showAns ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                  size: 20,
+                  color: _showAns ? AppTheme.accentCyan : AppTheme.accentViolet,
+                ),
+              ]),
+            ),
+          ),
+        ],
+
+        // ── Revealed answer content ──
         if (_showAns && q.answer != null) ...[
           const SizedBox(height: 8),
-          Container(padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: AppTheme.accentCyan.withOpacity(0.07), borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.accentCyan.withOpacity(0.2))),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Model Answer', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.accentCyan)),
-                const SizedBox(height: 4),
-                Text(q.answer!, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
-              ])),
+          AnimatedContainer(
+            duration: 300.ms,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.accentCyan.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.accentCyan.withOpacity(0.2)),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentCyan.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text('✅ Model Answer', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.accentCyan)),
+                ),
+              ]),
+              const SizedBox(height: 8),
+              Text(_clean(q.answer!), style: const TextStyle(fontSize: 13, height: 1.6, color: AppTheme.textPrimary)),
+            ]),
+          ),
         ],
       ]),
     );
