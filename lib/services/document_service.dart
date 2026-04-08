@@ -1,13 +1,18 @@
+import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:docx_to_text/docx_to_text.dart';
+import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'file_reader_native.dart'
     if (dart.library.html) 'file_reader_web.dart' as file_io;
 
 class DocumentService {
   /// Check if camera is available (mobile only, never on web)
   bool get isCameraAvailable => !kIsWeb;
+
+  // Max file size: 15MB — prevents OOM on phones
+  static const _maxFileSizeBytes = 15 * 1024 * 1024;
 
   /// Pick document files (PDF, TXT, MD, images)
   Future<PickedDocument?> pickDocument() async {
@@ -23,6 +28,18 @@ class DocumentService {
     if (result == null || result.files.isEmpty) return null;
 
     final file = result.files.single;
+    
+    // Guard against huge files that would crash the phone
+    if (file.size > _maxFileSizeBytes) {
+      return PickedDocument(
+        path: file.path ?? file.name,
+        name: file.name,
+        type: _getDocumentType(file.extension ?? ''),
+        size: file.size,
+        bytes: null, // Don't load bytes for oversized files
+      );
+    }
+
     final path = file.path ?? file.name;
 
     return PickedDocument(
@@ -48,7 +65,9 @@ class DocumentService {
 
     if (result == null) return [];
 
+    // Filter out files that are too large (>15MB) to prevent crash
     return result.files
+        .where((f) => f.size <= _maxFileSizeBytes)
         .map((f) => PickedDocument(
               path: f.path ?? f.name,
               name: f.name,
@@ -59,35 +78,62 @@ class DocumentService {
         .toList();
   }
 
-  /// Pick image files only
+  /// Pick image files only (compressed to prevent OOM crash)
   Future<PickedDocument?> pickImage() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      withData: true,
-    );
-
-    if (result == null || result.files.isEmpty) return null;
-
-    final file = result.files.single;
-    return PickedDocument(
-      path: file.path ?? file.name,
-      name: file.name,
-      type: DocumentType.image,
-      size: file.size,
-      bytes: file.bytes,
-    );
-  }
-
-  /// Take a photo using the device camera
-  Future<PickedDocument?> takePhoto() async {
     try {
       final picker = ImagePicker();
-      final file = await picker.pickImage(source: ImageSource.camera);
+      final file = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1280,
+        maxHeight: 1280,
+        imageQuality: 70,
+      );
       
       if (file == null) return null;
       
       final bytes = await file.readAsBytes();
-      final size = await file.length();
+      return PickedDocument(
+        path: file.path,
+        name: file.name,
+        type: DocumentType.image,
+        size: bytes.length,
+        bytes: bytes,
+      );
+    } catch (e) {
+      // Fallback to FilePicker if ImagePicker fails
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) return null;
+
+      final file = result.files.single;
+      return PickedDocument(
+        path: file.path ?? file.name,
+        name: file.name,
+        type: DocumentType.image,
+        size: file.size,
+        bytes: file.bytes,
+      );
+    }
+  }
+
+  /// Take a photo using the device camera (compressed to prevent OOM crash)
+  Future<PickedDocument?> takePhoto() async {
+    try {
+      final picker = ImagePicker();
+      final file = await picker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1280,       // Downscale to 1280px wide max
+        maxHeight: 1280,      // Downscale to 1280px tall max
+        imageQuality: 70,     // JPEG quality 70% — great for text recognition
+      );
+      
+      if (file == null) return null;
+      
+      final bytes = await file.readAsBytes();
+      final size = bytes.length;
       
       return PickedDocument(
         path: file.path,
@@ -169,20 +215,26 @@ class PickedDocument {
     // ── 1. Try in-memory bytes first (most reliable, works everywhere) ──
     if (bytes != null && bytes!.isNotEmpty) {
       if (type == DocumentType.pdf) {
-        return _extractTextFromPdfBytes(bytes!);
+        return await compute(_extractTextFromPdfBytesIsolated, bytes!);
       }
       if (type == DocumentType.image) {
-        return '[Image file: $name — use Analyze with AI for image analysis]';
+        final base64Image = base64Encode(bytes!);
+        final ext = name.split('.').last.toLowerCase();
+        final mimeType = ext == 'jpg' || ext == 'jpeg' ? 'image/jpeg' : 'image/$ext';
+        return '[BASE64_IMAGE:$mimeType:$base64Image]';
       }
       if (type == DocumentType.doc) {
-        try {
-          return docxToText(bytes!);
-        } catch (e) {
-          return '[Binary file: $name. Error: $e]';
+        if (name.toLowerCase().endsWith('.doc')) {
+          return '[Legacy Document: $name. Please convert to .docx, .txt, or .pdf to read its contents.]';
         }
+        final extracted = await compute(_extractTextFromDocxIsolated, bytes!);
+        if (extracted.startsWith('[Binary file Error')) {
+          return '[Binary file: $name. Error: $extracted]';
+        }
+        return extracted;
       }
       try {
-        return _decodeTextBytes(bytes!);
+        return await compute(_decodeTextBytesIsolated, bytes!);
       } catch (_) {
         return '[Binary file: $name]';
       }
@@ -194,11 +246,19 @@ class PickedDocument {
         if (type == DocumentType.pdf) {
           final fileBytes = await file_io.readFileAsBytes(path);
           if (fileBytes != null) {
-            return _extractTextFromPdfBytes(fileBytes);
+            return await compute(_extractTextFromPdfBytesIsolated, fileBytes);
           }
         }
         if (type == DocumentType.image) {
-          return '[Image file: $name — use Analyze with AI for image analysis]';
+          // Native file fallback (if bytes aren't pre-loaded)
+          final fileBytes = await file_io.readFileAsBytes(path);
+          if (fileBytes != null) {
+            final base64Image = base64Encode(fileBytes);
+            final ext = name.split('.').last.toLowerCase();
+            final mimeType = ext == 'jpg' || ext == 'jpeg' ? 'image/jpeg' : 'image/$ext';
+            return '[BASE64_IMAGE:$mimeType:$base64Image]';
+          }
+          return '[Image file: $name — could not read file]';
         }
         final content = await file_io.readFileAsString(path);
         if (content != null) return content;
@@ -207,100 +267,52 @@ class PickedDocument {
 
     return '[Could not read file: $name]';
   }
+}
 
-  /// Decode text bytes handling UTF-8 and Latin-1 fallback
-  String _decodeTextBytes(Uint8List bytes) {
-    try {
-      // Try UTF-8 first
-      return String.fromCharCodes(bytes);
-    } catch (_) {
-      // Fallback: filter to printable ASCII/Latin-1
-      final buffer = StringBuffer();
-      for (final byte in bytes) {
-        if (byte >= 32 && byte < 127 || byte == 10 || byte == 13 || byte == 9) {
-          buffer.writeCharCode(byte);
-        }
-      }
-      final result = buffer.toString().trim();
-      if (result.isEmpty) return '[Binary file: $name]';
-      return result;
+// ─────────────────────────────────────────────
+// TOP LEVEL ISOLATE FUNCTIONS (For Heavy Computation)
+// ─────────────────────────────────────────────
+
+/// Proper PDF text extraction using syncfusion_flutter_pdf
+String _extractTextFromPdfBytesIsolated(Uint8List pdfBytes) {
+  try {
+    final document = PdfDocument(inputBytes: pdfBytes);
+    final extractor = PdfTextExtractor(document);
+    final text = extractor.extractText();
+    document.dispose();
+    
+    if (text.trim().isEmpty) {
+        return '[PDF file appears to be image-based/scanned. Use Analyze with AI to process images directly.]';
     }
+    return text;
+  } catch (e) {
+    return '[PDF file — could not extract text: $e]';
   }
+}
 
-  /// Simple PDF text extraction by scanning for readable text streams
-  String _extractTextFromPdfBytes(Uint8List pdfBytes) {
-    try {
-      // Convert bytes to string, filtering non-printable chars
-      // PDF stores text between BT/ET markers and in Tj/TJ operators
-      final rawStr = String.fromCharCodes(
-        pdfBytes.where((b) => b >= 9 && b <= 126),
-      );
+String _extractTextFromDocxIsolated(Uint8List docxBytes) {
+  try {
+    return docxToText(docxBytes);
+  } catch (e) {
+    return '[Binary file Error: $e]';
+  }
+}
 
-      final textParts = <String>[];
-
-      // Method 1: Extract text from parentheses in text objects (Tj operator)
-      final tjRegex = RegExp(r'\(([^)]*)\)');
-      final matches = tjRegex.allMatches(rawStr);
-
-      for (final match in matches) {
-        final text = match.group(1) ?? '';
-        // Filter out short garbage strings and binary-looking content
-        if (text.length > 2 &&
-            !text.contains(RegExp(r'[\x00-\x08\x0E-\x1F]')) &&
-            text.contains(RegExp(r'[a-zA-Z]'))) {
-          // Unescape PDF escape sequences
-          final unescaped = text
-              .replaceAll(r'\n', '\n')
-              .replaceAll(r'\r', '\r')
-              .replaceAll(r'\t', '\t')
-              .replaceAll(r'\\', '\\')
-              .replaceAll(r'\(', '(')
-              .replaceAll(r'\)', ')');
-          textParts.add(unescaped);
-        }
+/// Decode text bytes handling UTF-8 and Latin-1 fallback
+String _decodeTextBytesIsolated(Uint8List bytes) {
+  try {
+    // Try UTF-8 first
+    return String.fromCharCodes(bytes);
+  } catch (_) {
+    // Fallback: filter to printable ASCII/Latin-1
+    final buffer = StringBuffer();
+    for (final byte in bytes) {
+      if (byte >= 32 && byte < 127 || byte == 10 || byte == 13 || byte == 9) {
+        buffer.writeCharCode(byte);
       }
-
-      if (textParts.isNotEmpty) {
-        final combined = textParts.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-        if (combined.length > 50) {
-          return combined;
-        }
-      }
-
-      // Method 2: Look for readable text between stream/endstream markers
-      final streamRegex = RegExp(r'stream\s*([\s\S]*?)\s*endstream');
-      final streamMatches = streamRegex.allMatches(rawStr);
-
-      final streamTexts = <String>[];
-      for (final match in streamMatches) {
-        final streamContent = match.group(1) ?? '';
-        // Extract text from Tj/TJ operators within streams
-        final innerTj = RegExp(r'\(([^)]+)\)');
-        for (final tjMatch in innerTj.allMatches(streamContent)) {
-          final t = tjMatch.group(1) ?? '';
-          if (t.length > 2 && t.contains(RegExp(r'[a-zA-Z]'))) {
-            streamTexts.add(t);
-          }
-        }
-      }
-
-      if (streamTexts.isNotEmpty) {
-        return streamTexts.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-      }
-
-      // Method 3: Just pull all readable strings as fallback
-      final readableRegex = RegExp('[A-Za-z][A-Za-z0-9 .,;:!?-]{10,}');
-      final readableMatches = readableRegex.allMatches(rawStr);
-      final readableTexts =
-          readableMatches.map((m) => m.group(0)!.trim()).toList();
-
-      if (readableTexts.isNotEmpty) {
-        return readableTexts.join('\n').trim();
-      }
-
-      return '[PDF file: $name — text extraction limited. Use Analyze with AI to process this document.]';
-    } catch (e) {
-      return '[PDF file: $name — could not extract text: $e]';
     }
+    final result = buffer.toString().trim();
+    if (result.isEmpty) return '[Binary file]';
+    return result;
   }
 }

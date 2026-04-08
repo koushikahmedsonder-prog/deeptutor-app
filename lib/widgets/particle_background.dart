@@ -2,6 +2,9 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../config/app_theme.dart';
 
+/// Animated floating particle background with performance optimizations.
+/// Uses RepaintBoundary to isolate animation from the child widget tree,
+/// and caches Paint objects to avoid ~2400 allocations/sec.
 class ParticleBackground extends StatefulWidget {
   final Widget child;
   final int particleCount;
@@ -33,19 +36,27 @@ class _ParticleBackgroundState extends State<ParticleBackground>
   }
 
   Particle _createParticle() {
+    final color = const [
+      AppTheme.accentIndigo,
+      AppTheme.accentViolet,
+      AppTheme.accentCyan,
+      AppTheme.accentPink,
+    ][_random.nextInt(4)];
+    final opacity = _random.nextDouble() * 0.5 + 0.1;
+    final size = _random.nextDouble() * 3 + 1;
+
     return Particle(
       x: _random.nextDouble(),
       y: _random.nextDouble(),
-      size: _random.nextDouble() * 3 + 1,
+      size: size,
       speedX: (_random.nextDouble() - 0.5) * 0.002,
-      speedY: -(_random.nextDouble() * 0.003 + 0.001), // Float upward (antigravity)
-      opacity: _random.nextDouble() * 0.5 + 0.1,
-      color: [
-        AppTheme.accentIndigo,
-        AppTheme.accentViolet,
-        AppTheme.accentCyan,
-        AppTheme.accentPink,
-      ][_random.nextInt(4)],
+      speedY: -(_random.nextDouble() * 0.003 + 0.001),
+      opacity: opacity,
+      color: color,
+      // ⚡ Pre-create the Paint object — avoids 60 allocations/sec per particle
+      paint: Paint()
+        ..color = color.withValues(alpha: opacity)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, size * 2),
     );
   }
 
@@ -59,27 +70,28 @@ class _ParticleBackgroundState extends State<ParticleBackground>
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) {
-            // Update particle positions
-            for (var p in _particles) {
-              p.x += p.speedX;
-              p.y += p.speedY;
+        // ⚡ RepaintBoundary isolates particle repaints from the child tree
+        RepaintBoundary(
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) {
+              for (var p in _particles) {
+                p.x += p.speedX;
+                p.y += p.speedY;
 
-              // Wrap around
-              if (p.y < -0.05) {
-                p.y = 1.05;
-                p.x = _random.nextDouble();
+                if (p.y < -0.05) {
+                  p.y = 1.05;
+                  p.x = _random.nextDouble();
+                }
+                if (p.x < -0.05) p.x = 1.05;
+                if (p.x > 1.05) p.x = -0.05;
               }
-              if (p.x < -0.05) p.x = 1.05;
-              if (p.x > 1.05) p.x = -0.05;
-            }
-            return CustomPaint(
-              painter: ParticlePainter(_particles),
-              size: Size.infinite,
-            );
-          },
+              return CustomPaint(
+                painter: _ParticlePainter(_particles),
+                size: Size.infinite,
+              );
+            },
+          ),
         ),
         widget.child,
       ],
@@ -93,6 +105,7 @@ class Particle {
   double speedX, speedY;
   final double opacity;
   final Color color;
+  final Paint paint; // ⚡ Cached
 
   Particle({
     required this.x,
@@ -102,25 +115,22 @@ class Particle {
     required this.speedY,
     required this.opacity,
     required this.color,
+    required this.paint,
   });
 }
 
-class ParticlePainter extends CustomPainter {
+class _ParticlePainter extends CustomPainter {
   final List<Particle> particles;
 
-  ParticlePainter(this.particles);
+  _ParticlePainter(this.particles);
 
   @override
   void paint(Canvas canvas, Size size) {
     for (final p in particles) {
-      final paint = Paint()
-        ..color = p.color.withValues(alpha: p.opacity)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, p.size * 2);
-
       canvas.drawCircle(
         Offset(p.x * size.width, p.y * size.height),
         p.size,
-        paint,
+        p.paint, // ⚡ Use cached paint
       );
     }
   }

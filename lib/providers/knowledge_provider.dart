@@ -27,6 +27,7 @@ class KnowledgeState {
     bool? isLoading,
     String? error,
     String? selectedKb,
+    bool clearSelectedKb = false,
     double? uploadProgress,
     bool? isUploading,
   }) {
@@ -34,7 +35,7 @@ class KnowledgeState {
       knowledgeBases: knowledgeBases ?? this.knowledgeBases,
       isLoading: isLoading ?? this.isLoading,
       error: error,
-      selectedKb: selectedKb ?? this.selectedKb,
+      selectedKb: clearSelectedKb ? null : (selectedKb ?? this.selectedKb),
       uploadProgress: uploadProgress ?? this.uploadProgress,
       isUploading: isUploading ?? this.isUploading,
     );
@@ -222,7 +223,11 @@ class KnowledgeNotifier extends Notifier<KnowledgeState> {
   }
 
   void selectKnowledgeBase(String? kbName) {
-    state = state.copyWith(selectedKb: kbName);
+    if (kbName == null) {
+      state = state.copyWith(clearSelectedKb: true);
+    } else {
+      state = state.copyWith(selectedKb: kbName);
+    }
   }
 
   Future<void> deleteKnowledgeBase(String kbName) async {
@@ -247,7 +252,7 @@ class KnowledgeNotifier extends Notifier<KnowledgeState> {
       );
 
       if (state.selectedKb == kbName) {
-        state = state.copyWith(selectedKb: null);
+        state = state.copyWith(clearSelectedKb: true);
       }
 
       await loadKnowledgeBases();

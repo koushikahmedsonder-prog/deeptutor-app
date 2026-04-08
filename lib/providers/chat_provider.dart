@@ -3,6 +3,9 @@ import 'api_provider.dart';
 import 'knowledge_provider.dart';
 import '../services/storage_service.dart';
 import '../services/document_service.dart';
+import '../config/models_config.dart';
+import '../services/duckduckgo_service.dart';
+
 // ── Chat Message ──
 class ChatMessage {
   final String content;
@@ -36,22 +39,26 @@ class ChatMessage {
 
 // ── Chat State ──
 class ChatState {
+  final String? id;
   final List<ChatMessage> messages;
   final bool isLoading;
   final String? error;
 
   const ChatState({
+    this.id,
     this.messages = const [],
     this.isLoading = false,
     this.error,
   });
 
   ChatState copyWith({
+    String? id,
     List<ChatMessage>? messages,
     bool? isLoading,
     String? error,
   }) {
     return ChatState(
+      id: id ?? this.id,
       messages: messages ?? this.messages,
       isLoading: isLoading ?? this.isLoading,
       error: error,
@@ -68,18 +75,23 @@ class ChatNotifier extends Notifier<ChatState> {
   }
 
   Future<void> _loadActiveSession() async {
-    final sessionId = StorageService.getActiveSessionId() ?? DateTime.now().millisecondsSinceEpoch.toString();
+    final sessionId = StorageService.getActiveSessionId() ??
+        DateTime.now().millisecondsSinceEpoch.toString();
     await StorageService.saveActiveSessionId(sessionId);
-    
+
     final session = StorageService.getChatSession(sessionId);
     if (session != null) {
-      final loadedMessages = session.messages.map((sMsg) => ChatMessage(
-        content: sMsg.content,
-        isUser: sMsg.role == 'user',
-        timestamp: sMsg.timestamp,
-        citations: sMsg.citations,
-      )).toList();
-      state = state.copyWith(messages: loadedMessages);
+      final loadedMessages = session.messages
+          .map((sMsg) => ChatMessage(
+                content: sMsg.content,
+                isUser: sMsg.role == 'user',
+                timestamp: sMsg.timestamp,
+                citations: sMsg.citations,
+              ))
+          .toList();
+      state = state.copyWith(id: sessionId, messages: loadedMessages);
+    } else {
+      state = state.copyWith(id: sessionId);
     }
   }
 
@@ -103,52 +115,61 @@ class ChatNotifier extends Notifier<ChatState> {
     _persistMessage(msg);
   }
 
-  Future<void> sendQuestion(String kbName, String question, {PickedDocument? attachment, bool useWebSearch = false}) async {
+  /// KB-based question — uses interactive engine with single-call (fast)
+  Future<void> sendQuestion(String kbName, String question,
+      {PickedDocument? attachment, bool useWebSearch = false}) async {
     addUserMessage(question, attachment: attachment);
     state = state.copyWith(isLoading: true, error: null);
 
-    // Add placeholder AI message
     final aiMessage = ChatMessage(
-      content: 'Thinking...',
+      content: 'Analyzing your question...',
       isUser: false,
       isStreaming: true,
     );
     state = state.copyWith(messages: [...state.messages, aiMessage]);
 
     try {
-      final api = ref.read(apiServiceProvider);
+      final engine = ref.read(interactiveAnswerEngineProvider);
       final kbNotifier = ref.read(knowledgeProvider.notifier);
-
-      // Get KB content for context
       final kbContent = kbNotifier.getKnowledgeBaseContent(kbName);
 
-      // Call Gemini API
-      final answer = await api.solveQuestion(
+      final pastContext = _buildPastContext();
+
+      // Use single-call interactive engine (fast, no dual-loop overhead)
+      final interactiveAnswer = await engine.answerSingleCall(
         question: question,
-        kbContent: kbContent.isNotEmpty ? kbContent : null,
+        pastContext: kbContent.isNotEmpty
+            ? 'KB Context:\n$kbContent\n\n$pastContext'
+            : pastContext,
         attachment: attachment,
         useWebSearch: useWebSearch,
       );
 
-      _updateLastAIMessage(answer, false, []);
+      // Store the formatted Markdown instead of raw JSON
+      final messageContent = interactiveAnswer.isRichFormat 
+          ? interactiveAnswer.toMarkdown() 
+          : interactiveAnswer.rawText;
+      _updateLastAIMessage(messageContent, false, []);
       state = state.copyWith(isLoading: false);
     } catch (e) {
-      _updateLastAIMessage(
-        'Error: ${e.toString()}',
-        false,
-        [],
-      );
+      _updateLastAIMessage('Error: ${e.toString()}', false, []);
       state = state.copyWith(isLoading: false, error: e.toString());
     }
   }
 
-  /// Send a general question without KB context
-  Future<void> sendGeneralQuestion(String question, {PickedDocument? attachment, bool useWebSearch = false}) async {
+  /// General question (no KB) — also uses interactive engine
+  Future<void> sendGeneralQuestion(String question, {
+    PickedDocument? attachment,
+    bool useWebSearch = false,
+    bool useCode = false,
+    bool useReason = false,
+    LLMModel? modelOverride,
+  }) async {
     addUserMessage(question, attachment: attachment);
     state = state.copyWith(isLoading: true, error: null);
 
     final aiMessage = ChatMessage(
-      content: 'Thinking...',
+      content: 'Searching and thinking...',
       isUser: false,
       isStreaming: true,
     );
@@ -156,22 +177,90 @@ class ChatNotifier extends Notifier<ChatState> {
 
     try {
       final api = ref.read(apiServiceProvider);
-      final answer = await api.solveQuestion(
+      final pastContext = _buildPastContext();
+
+      // ── STEP 1: Auto-decide if web search is needed ──────────
+      final shouldSearch = useWebSearch || await _shouldUseWebSearch(question, api);
+
+      // ── STEP 2: Fetch web content if needed ──────────────────
+      String webContext = '';
+      List<String> sourceCitations = [];
+
+      if (shouldSearch) {
+        _updateLastAIMessage('🔍 Searching the web...', true, []);
+        try {
+          webContext = await DuckDuckGoService.searchWithContent(question);
+          // Extract source URLs for citation chips
+          final urlRegex = RegExp(r'Source:\s*(https?://[^\s\)]+)');
+          sourceCitations = urlRegex
+              .allMatches(webContext)
+              .map((m) => m.group(1)!)
+              .take(3)
+              .toList();
+        } catch (_) {
+          webContext = '';
+        }
+      }
+
+      // ── STEP 3: Build prompt with web context ─────────────────
+      _updateLastAIMessage('💡 Generating answer...', true, []);
+
+      final enhancedContext = [
+        if (pastContext.isNotEmpty) pastContext,
+        if (webContext.isNotEmpty) 'WEB SEARCH RESULTS (use these as primary source, cite URLs):\n$webContext',
+      ].join('\n\n');
+
+      final engine = ref.read(interactiveAnswerEngineProvider);
+      final interactiveAnswer = await engine.answerSingleCall(
         question: question,
+        pastContext: enhancedContext,
         attachment: attachment,
-        useWebSearch: useWebSearch,
+        useWebSearch: false, // manually handled above
       );
 
-      _updateLastAIMessage(answer, false, []);
+      final messageContent = interactiveAnswer.isRichFormat 
+          ? interactiveAnswer.toMarkdown() 
+          : interactiveAnswer.rawText;
+
+      _updateLastAIMessage(messageContent, false, sourceCitations);
       state = state.copyWith(isLoading: false);
+
     } catch (e) {
-      _updateLastAIMessage(
-        'Error: ${e.toString()}',
-        false,
-        [],
-      );
+      _updateLastAIMessage('Error: ${e.toString()}', false, []);
       state = state.copyWith(isLoading: false, error: e.toString());
     }
+  }
+
+  // ── Auto-detect if question needs web search ─────────────────
+  Future<bool> _shouldUseWebSearch(String question, dynamic api) async {
+    // Fast keyword check first (no API call needed)
+    final webKeywords = [
+      'latest', 'news', 'today', 'current', 'price', 'who is',
+      'what is', 'how to', 'best', 'top', 'recent', '2024', '2025',
+      'where', 'when', 'find', 'search', 'show me',
+    ];
+    final lower = question.toLowerCase();
+    if (webKeywords.any((k) => lower.contains(k))) return true;
+
+    // For ambiguous questions, ask AI
+    try {
+      final decision = await api.callLLM(
+        prompt: 'Does this need a web search for current/factual info? "$question"\nReply YES or NO only.',
+        systemInstruction: 'Reply with only YES or NO.',
+      );
+      return decision.trim().toUpperCase().startsWith('Y');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _buildPastContext() {
+    if (state.messages.length <= 2) return '';
+    return state.messages
+        .sublist(0, state.messages.length - 2)
+        .take(6) // last 6 messages for context
+        .map((m) => '${m.isUser ? "User" : "Assistant"}: ${m.content}')
+        .join('\n');
   }
 
   void _updateLastAIMessage(
@@ -188,18 +277,23 @@ class ChatNotifier extends Notifier<ChatState> {
       );
       messages[messages.length - 1] = updatedMsg;
       state = state.copyWith(messages: messages);
-      
-      // Persist when the response finishes streaming
+
       if (!isStreaming) {
         _persistMessage(updatedMsg);
       }
     }
   }
 
+  void loadSession(String sessionId) {
+    StorageService.saveActiveSessionId(sessionId);
+    state = const ChatState();
+    _loadActiveSession();
+  }
+
   void clearChat() {
     state = const ChatState();
     StorageService.clearActiveSession();
-    _loadActiveSession(); // start a new isolated session
+    _loadActiveSession();
   }
 }
 

@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import '../config/app_theme.dart';
+import '../utils/theme_helper.dart';
 import '../providers/api_provider.dart';
 import '../services/document_service.dart';
-import '../services/pdf_export_service.dart';
+import '../widgets/rich_content_renderer.dart';
+import '../widgets/language_selector.dart';
+import '../widgets/export_sheet.dart';
+
+
 
 class ResearchScreen extends ConsumerStatefulWidget {
   const ResearchScreen({super.key});
@@ -20,7 +24,6 @@ class _ResearchScreenState extends ConsumerState<ResearchScreen> {
   final _docService = DocumentService();
   String _selectedPreset = 'auto';
   bool _isResearching = false;
-  bool _isExporting = false;
   String _result = '';
   PickedDocument? _attachment;
 
@@ -56,7 +59,7 @@ class _ResearchScreenState extends ConsumerState<ResearchScreen> {
   void _showAttachOptions() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppTheme.surfaceDark,
+      backgroundColor: AppTheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -73,10 +76,10 @@ class _ResearchScreenState extends ConsumerState<ResearchScreen> {
                     color: AppTheme.accentIndigo.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(Icons.file_open_rounded, color: AppTheme.accentIndigo),
+                  child: Icon(Icons.file_open_rounded, color: AppTheme.accentIndigo),
                 ),
-                title: const Text('Upload File', style: TextStyle(color: AppTheme.textPrimary)),
-                subtitle: const Text('PDF, Doc, TXT, Image', style: TextStyle(color: AppTheme.textTertiary, fontSize: 12)),
+                title: Text('Upload File', style: TextStyle(color: context.textPri)),
+                subtitle: Text('PDF, Doc, TXT, Image', style: TextStyle(color: context.textTer, fontSize: 12)),
                 onTap: () { Navigator.pop(ctx); _pickFile(); },
               ),
               if (_docService.isCameraAvailable)
@@ -87,10 +90,10 @@ class _ResearchScreenState extends ConsumerState<ResearchScreen> {
                       color: AppTheme.accentCyan.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(Icons.camera_alt_rounded, color: AppTheme.accentCyan),
+                    child: Icon(Icons.camera_alt_rounded, color: AppTheme.accentCyan),
                   ),
-                  title: const Text('Take Photo', style: TextStyle(color: AppTheme.textPrimary)),
-                  subtitle: const Text('Capture with camera', style: TextStyle(color: AppTheme.textTertiary, fontSize: 12)),
+                  title: Text('Take Photo', style: TextStyle(color: context.textPri)),
+                  subtitle: Text('Capture with camera', style: TextStyle(color: context.textTer, fontSize: 12)),
                   onTap: () { Navigator.pop(ctx); _takePhoto(); },
                 ),
             ],
@@ -153,35 +156,6 @@ class _ResearchScreenState extends ConsumerState<ResearchScreen> {
     }
   }
 
-  Future<void> _downloadResult() async {
-    if (_result.isEmpty) return;
-    setState(() => _isExporting = true);
-    try {
-      final topic = _topicController.text.trim();
-      final path = await PdfExportService.exportAsFile(
-        title: 'Research_${topic.isEmpty ? "Report" : topic}',
-        content: _result,
-      );
-      if (mounted) {
-        setState(() => _isExporting = false);
-        if (path != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✅ PDF saved: $path'),
-              backgroundColor: Colors.green.shade800,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isExporting = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export error: $e')));
-      }
-    }
-  }
-
   void _copyResult() {
     if (_result.isEmpty) return;
     Clipboard.setData(ClipboardData(text: _result));
@@ -194,196 +168,204 @@ class _ResearchScreenState extends ConsumerState<ResearchScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Deep Research'),
+        title: Text('Deep Research'),
         actions: [
+          const LanguageSelector(),
+          const SizedBox(width: 8),
           if (_result.isNotEmpty) ...[
             IconButton(
               onPressed: _copyResult,
-              icon: const Icon(Icons.copy_rounded, color: AppTheme.accentCyan),
+              icon: Icon(Icons.copy_rounded, color: AppTheme.accentCyan),
               tooltip: 'Copy all',
             ),
             IconButton(
-              onPressed: _isExporting ? null : _downloadResult,
-              icon: _isExporting
-                  ? const SizedBox(width: 20, height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accentGreen))
-                  : const Icon(Icons.download_rounded, color: AppTheme.accentGreen),
-              tooltip: 'Download PDF',
+              icon: Icon(Icons.auto_awesome_rounded, color: AppTheme.accentGreen),
+              tooltip: 'Export AI Assets (Slides, Mind Map, etc.)',
+              onPressed: () {
+                final topic = _topicController.text.trim();
+                final title = topic.isEmpty ? 'Deep Research' : topic;
+                showExportSheet(context, ref.read(apiServiceProvider), title, _result);
+              },
             ),
           ],
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                // Topic input with attach button
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _topicController,
-                        style: const TextStyle(color: AppTheme.textPrimary),
-                        maxLines: 2,
-                        minLines: 1,
-                        decoration: InputDecoration(
-                          hintText: _attachment != null
-                              ? 'Add research focus (optional)...'
-                              : 'Enter research topic...',
-                          prefixIcon: const Icon(Icons.search_rounded, color: AppTheme.textTertiary),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  // Topic input with attach button
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _topicController,
+                          style: TextStyle(color: context.textPri),
+                          maxLines: 2,
+                          minLines: 1,
+                          decoration: InputDecoration(
+                            hintText: _attachment != null
+                                ? 'Add research focus (optional)...'
+                                : 'Enter research topic...',
+                            prefixIcon: Icon(Icons.search_rounded, color: context.textTer),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    // Attach button
-                    GestureDetector(
-                      onTap: _showAttachOptions,
-                      child: Container(
-                        width: 52, height: 52,
-                        decoration: BoxDecoration(
-                          color: _attachment != null
-                              ? AppTheme.accentIndigo.withValues(alpha: 0.15)
-                              : AppTheme.surfaceDark,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
+                      SizedBox(width: 8),
+                      // Attach button
+                      GestureDetector(
+                        onTap: _showAttachOptions,
+                        child: Container(
+                          width: 52, height: 52,
+                          decoration: BoxDecoration(
                             color: _attachment != null
-                                ? AppTheme.accentIndigo.withValues(alpha: 0.5)
-                                : AppTheme.cardBorder,
+                                ? AppTheme.accentIndigo.withValues(alpha: 0.15)
+                                : AppTheme.surface,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: _attachment != null
+                                  ? AppTheme.accentIndigo.withValues(alpha: 0.5)
+                                  : AppTheme.cardBorder,
+                            ),
                           ),
-                        ),
-                        child: Icon(
-                          Icons.attach_file_rounded,
-                          color: _attachment != null ? AppTheme.accentIndigo : AppTheme.textTertiary,
+                          child: Icon(
+                            Icons.attach_file_rounded,
+                            color: _attachment != null ? AppTheme.accentIndigo : AppTheme.textTertiary,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
 
-                // Attachment preview
-                if (_attachment != null) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: AppTheme.accentIndigo.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppTheme.accentIndigo.withValues(alpha: 0.2)),
-                    ),
-                    child: Row(
-                      children: [
-                        if (_attachment!.type == DocumentType.image && _attachment!.bytes != null)
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.memory(_attachment!.bytes!, width: 36, height: 36, fit: BoxFit.cover),
-                          )
-                        else
-                          Text(_attachment!.icon, style: const TextStyle(fontSize: 22)),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(_attachment!.name,
-                                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w500),
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                              Text(_attachment!.sizeFormatted,
-                                style: const TextStyle(color: AppTheme.textTertiary, fontSize: 11)),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 18, color: AppTheme.textSecondary),
-                          onPressed: _removeAttachment,
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      ],
-                    ),
-                  ).animate().fadeIn(duration: 200.ms),
-                ],
-
-                const SizedBox(height: 14),
-                // Depth presets
-                Row(
-                  children: _presets.map((p) {
-                    final isSelected = _selectedPreset == p['value'];
-                    final color = p['color'] as Color;
-                    return Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: GestureDetector(
-                          onTap: () => setState(() => _selectedPreset = p['value'] as String),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            decoration: BoxDecoration(
-                              color: isSelected ? color.withValues(alpha: 0.15) : AppTheme.surfaceDark,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: isSelected ? color : AppTheme.cardBorder),
-                            ),
+                  // Attachment preview
+                  if (_attachment != null) ...[
+                    SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppTheme.accentIndigo.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppTheme.accentIndigo.withValues(alpha: 0.2)),
+                      ),
+                      child: Row(
+                        children: [
+                          if (_attachment!.type == DocumentType.image && _attachment!.bytes != null)
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.memory(_attachment!.bytes!, width: 36, height: 36, fit: BoxFit.cover),
+                            )
+                          else
+                            Text(_attachment!.icon, style: TextStyle(fontSize: 22)),
+                          SizedBox(width: 10),
+                          Expanded(
                             child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Icon(p['icon'] as IconData, size: 20,
-                                    color: isSelected ? color : AppTheme.textTertiary),
-                                const SizedBox(height: 4),
-                                Text(p['label'] as String,
-                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                                      color: isSelected ? color : AppTheme.textTertiary)),
+                                Text(_attachment!.name,
+                                  style: TextStyle(color: context.textPri, fontSize: 13, fontWeight: FontWeight.w500),
+                                  maxLines: 1, overflow: TextOverflow.ellipsis),
+                                Text(_attachment!.sizeFormatted,
+                                  style: TextStyle(color: context.textTer, fontSize: 11)),
                               ],
                             ),
                           ),
-                        ),
+                          IconButton(
+                            icon: Icon(Icons.close_rounded, size: 18, color: context.textSec),
+                            onPressed: _removeAttachment,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ],
                       ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 14),
-                // Start button
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton.icon(
-                    onPressed: _isResearching ? null : _startResearch,
-                    icon: _isResearching
-                        ? const SizedBox(width: 18, height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.biotech_rounded),
-                    label: Text(_isResearching ? 'Researching...' : 'Start Research'),
+                    ).animate().fadeIn(duration: 200.ms),
+                  ],
+
+                  SizedBox(height: 14),
+                  // Depth presets
+                  Row(
+                    children: _presets.map((p) {
+                      final isSelected = _selectedPreset == p['value'];
+                      final color = p['color'] as Color;
+                      return Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: GestureDetector(
+                            onTap: () => setState(() => _selectedPreset = p['value'] as String),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              decoration: BoxDecoration(
+                                color: isSelected ? color.withValues(alpha: 0.15) : AppTheme.surface,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: isSelected ? color : AppTheme.cardBorder),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(p['icon'] as IconData, size: 20,
+                                      color: isSelected ? color : AppTheme.textTertiary),
+                                  SizedBox(height: 4),
+                                  Text(p['label'] as String,
+                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                                        color: isSelected ? color : AppTheme.textTertiary)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   ),
-                ),
-              ],
+                  SizedBox(height: 14),
+                  // Start button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: _isResearching ? null : _startResearch,
+                      icon: _isResearching
+                          ? SizedBox(width: 18, height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: context.textPri))
+                          : Icon(Icons.biotech_rounded),
+                      label: Text(_isResearching ? 'Researching...' : 'Start Research'),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          Expanded(
-            child: _result.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.biotech_rounded, size: 64,
-                            color: AppTheme.accentOrange.withValues(alpha: 0.3)),
-                        const SizedBox(height: 16),
-                        const Text('Enter a topic or attach a file',
-                          style: TextStyle(color: AppTheme.textTertiary, fontSize: 16)),
-                        const SizedBox(height: 6),
-                        const Text('Upload PDFs, docs, or images for AI-powered research',
-                          style: TextStyle(color: AppTheme.textTertiary, fontSize: 13)),
-                      ],
+            
+            // Result View
+            _result.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.biotech_rounded, size: 64,
+                              color: AppTheme.accentOrange.withValues(alpha: 0.3)),
+                          SizedBox(height: 16),
+                          Text('Enter a topic or attach a file',
+                            style: TextStyle(color: context.textTer, fontSize: 16)),
+                          SizedBox(height: 6),
+                          Text('Upload PDFs, docs, or images for AI-powered research',
+                            style: TextStyle(color: context.textTer, fontSize: 13),
+                            textAlign: TextAlign.center),
+                        ],
+                      ),
                     ),
                   )
-                : SelectionArea(
-                    child: Markdown(
-                      data: _result,
+                : Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                    child: RichContentRenderer(
+                      content: _result,
                       selectable: true,
-                      padding: const EdgeInsets.all(16),
-                      styleSheet: AppTheme.markdownStyle,
                     ).animate().fadeIn(duration: 400.ms),
                   ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

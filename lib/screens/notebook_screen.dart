@@ -2,14 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../config/app_theme.dart';
 import '../providers/api_provider.dart';
+import '../providers/knowledge_provider.dart';
 import '../services/deeptutor_prompts.dart';
 import '../services/pdf_export_service.dart';
-
+import '../widgets/rich_content_renderer.dart';
+import '../widgets/language_selector.dart';
+import '../utils/theme_helper.dart';
+import '../widgets/export_sheet.dart';
 class NotebookScreen extends ConsumerStatefulWidget {
   const NotebookScreen({super.key});
 
@@ -25,6 +28,22 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
   final _searchController = TextEditingController();
   String? _selectedTag;
   bool _isSearching = false;
+
+  void _makeFromNotebook(String title, List<Map<String, dynamic>> notes) {
+    if (notes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No notes available!')));
+      return;
+    }
+    final buffer = StringBuffer();
+    buffer.writeln('# Notebook Export\n');
+    for (final note in notes) {
+      if (note['content'] != null) {
+        buffer.writeln('${note['content']}');
+        buffer.writeln('\n---\n');
+      }
+    }
+    showExportSheet(context, ref.read(apiServiceProvider), 'My Notes - $title', buffer.toString());
+  }
 
   static const List<Map<String, dynamic>> _availableTags = [
     {'name': 'Study', 'color': 0xFF6C63FF},
@@ -90,6 +109,8 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
     _titleController.text = existingNote?['title'] ?? '';
     _contentController.text = existingNote?['content'] ?? '';
     String? noteTag = existingNote?['tag'];
+    String? linkedKb = existingNote?['linkedKb'];
+    final kbs = ref.read(knowledgeProvider).knowledgeBases;
 
     showModalBottomSheet(
       context: context,
@@ -98,9 +119,9 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) => Container(
           padding: EdgeInsets.fromLTRB(24, 16, 24, MediaQuery.of(ctx).viewInsets.bottom + 24),
-          decoration: const BoxDecoration(
-            color: AppTheme.surfaceDark,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          decoration: BoxDecoration(
+            color: context.surfaceColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           ),
           child: SingleChildScrollView(
             child: Column(
@@ -112,31 +133,33 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                     width: 40, height: 4,
                     margin: const EdgeInsets.only(bottom: 16),
                     decoration: BoxDecoration(
-                      color: AppTheme.textTertiary,
+                      color: context.textTer,
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
                 ),
                 Text(editIndex != null ? 'Edit Note' : 'New Note',
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: context.textPri)),
                 const SizedBox(height: 16),
                 TextField(
                   controller: _titleController,
                   autofocus: true,
-                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 16),
+                  style: TextStyle(color: context.textPri, fontSize: 16),
                   decoration: InputDecoration(
                     hintText: 'Note title',
+                    hintStyle: AppTheme.hintStyle,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: _contentController,
-                  style: const TextStyle(color: AppTheme.textPrimary),
+                  style: TextStyle(color: context.textPri),
                   maxLines: 8,
                   minLines: 4,
                   decoration: InputDecoration(
                     hintText: 'Write your note... (markdown supported)',
+                    hintStyle: AppTheme.hintStyle,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     alignLabelWithHint: true,
                   ),
@@ -152,16 +175,39 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                       label: Text(tag['name'] as String),
                       selected: isSelected,
                       selectedColor: color.withValues(alpha: 0.25),
-                      backgroundColor: AppTheme.cardDark,
+                      backgroundColor: context.surfaceColor,
                       checkmarkColor: color,
-                      labelStyle: TextStyle(color: isSelected ? color : AppTheme.textSecondary, fontSize: 13),
-                      side: BorderSide(color: isSelected ? color : AppTheme.cardBorder),
+                      labelStyle: TextStyle(color: isSelected ? color : context.textSec, fontSize: 13),
+                      side: BorderSide(color: isSelected ? color : context.cardBorder),
                       onSelected: (selected) {
                         setSheetState(() => noteTag = selected ? tag['name'] as String : null);
                       },
                     );
                   }).toList(),
                 ),
+                if (kbs.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text('Connect Knowledge Base', style: TextStyle(color: context.textSec, fontSize: 13, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: linkedKb,
+                    decoration: InputDecoration(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      isDense: true,
+                    ),
+                    dropdownColor: context.surfaceColor,
+                    hint: const Text('Select a KB to link context...'),
+                    items: [
+                      const DropdownMenuItem<String>(value: null, child: Text('None', style: TextStyle(color: Colors.grey))),
+                      ...kbs.map((kb) => DropdownMenuItem<String>(
+                        value: kb['name'] as String,
+                        child: Text(kb['name'] as String, style: TextStyle(color: context.textPri)),
+                      )),
+                    ],
+                    onChanged: (val) => setSheetState(() => linkedKb = val),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 Row(
                   children: [
@@ -176,6 +222,7 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                               'title': _titleController.text.trim(),
                               'content': _contentController.text.trim(),
                               'tag': noteTag,
+                              'linkedKb': linkedKb,
                               'timestamp': DateTime.now().millisecondsSinceEpoch,
                               'pinned': existingNote?['pinned'] ?? false,
                             };
@@ -224,8 +271,12 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
     setState(() => _notes.removeAt(index));
     _saveNotes();
     _filterNotes();
+    ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
+        duration: const Duration(seconds: 4),
+        behavior: SnackBarBehavior.floating,
+        showCloseIcon: true,
         content: Text('Deleted "${note['title']}"'),
         action: SnackBarAction(
           label: 'Undo',
@@ -247,14 +298,29 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
     );
   }
 
-  Future<void> _downloadNote(Map<String, dynamic> note) async {
+  Future<void> _exportNote(Map<String, dynamic> note) async {
+    final title = note['title']?.toString() ?? 'Note';
+    final content = note['content']?.toString() ?? '';
+    if (content.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Note is empty — add content first')));
+      return;
+    }
+    final api = ref.read(apiServiceProvider);
+    await showExportSheet(context, api, title, content);
+  }
+
+  Future<void> _downloadNote(Map<String, dynamic> note, bool asDoc) async {
     final title = note['title'] ?? 'Note';
     final content = '# $title\n\n${note['content'] ?? ''}';
     try {
-      final path = await PdfExportService.exportAsFile(title: 'Note_$title', content: content);
+      final path = asDoc
+          ? await PdfExportService.exportAsDoc(title: 'Note_$title', content: content)
+          : await PdfExportService.exportAsFile(title: 'Note_$title', content: content);
+          
       if (mounted && path != null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('✅ PDF saved: $path'), backgroundColor: Colors.green.shade800, duration: const Duration(seconds: 4)),
+          SnackBar(content: Text('✅ ${asDoc ? "DOC" : "PDF"} saved: $path'), backgroundColor: Colors.green.shade800, duration: const Duration(seconds: 4)),
         );
       }
     } catch (e) {
@@ -262,7 +328,7 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
     }
   }
 
-  Future<void> _downloadAllNotes() async {
+  Future<void> _downloadAllNotes(bool asDoc) async {
     if (_notes.isEmpty) return;
     final buffer = StringBuffer();
     buffer.writeln('# My Notebook\n');
@@ -275,10 +341,13 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
       buffer.writeln('\n---\n');
     }
     try {
-      final path = await PdfExportService.exportAsFile(title: 'All_Notebook_Notes', content: buffer.toString());
+      final path = asDoc
+          ? await PdfExportService.exportAsDoc(title: 'All_Notebook_Notes', content: buffer.toString())
+          : await PdfExportService.exportAsFile(title: 'All_Notebook_Notes', content: buffer.toString());
+          
       if (mounted && path != null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('✅ PDF saved: $path'), backgroundColor: Colors.green.shade800, duration: const Duration(seconds: 4)),
+          SnackBar(content: Text('✅ ${asDoc ? "DOC" : "PDF"} saved: $path'), backgroundColor: Colors.green.shade800, duration: const Duration(seconds: 4)),
         );
       }
     } catch (e) {
@@ -307,9 +376,9 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
           padding: const EdgeInsets.all(24),
           margin: const EdgeInsets.all(40),
           decoration: BoxDecoration(
-            color: AppTheme.surfaceDark,
+            color: context.surfaceColor,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppTheme.cardBorder),
+            border: Border.all(color: context.cardBorder),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -317,7 +386,7 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
               const CircularProgressIndicator(color: AppTheme.accentIndigo),
               const SizedBox(height: 16),
               Text('AI is ${action == 'summarize' ? 'summarizing' : action == 'quiz' ? 'generating quiz' : action == 'expand' ? 'expanding' : 'connecting'}...',
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, decoration: TextDecoration.none)),
+                style: TextStyle(color: context.textPri, fontSize: 14, decoration: TextDecoration.none)),
             ],
           ),
         ),
@@ -348,17 +417,28 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
           prompt = content;
       }
 
+      final linkedKb = note['linkedKb']?.toString();
+      if (linkedKb != null && linkedKb.isNotEmpty) {
+        final kbContent = ref.read(knowledgeProvider.notifier).getKnowledgeBaseContent(linkedKb);
+        if (kbContent.isNotEmpty) {
+          final limitedKbContent = kbContent.length > 50000 ? kbContent.substring(0, 50000) : kbContent;
+          prompt += '\n\n---\nAdditional Context from linked Knowledge Base ($linkedKb):\n$limitedKbContent\n---';
+        }
+      }
+
+      await Future.delayed(const Duration(milliseconds: 100));
+
       final result = await api.callLLM(prompt: prompt, systemInstruction: systemPrompt);
 
       if (mounted) {
-        Navigator.pop(context); // dismiss loading dialog
+        Navigator.of(context, rootNavigator: true).pop(); // dismiss loading dialog
 
         // Show result in a bottom sheet
         _showAIResult(title, action, result, index);
       }
     } catch (e) {
       if (mounted) {
-        Navigator.pop(context);
+        Navigator.of(context, rootNavigator: true).pop();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('AI Error: $e')));
       }
     }
@@ -380,9 +460,9 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
       builder: (ctx) => Container(
         height: MediaQuery.of(ctx).size.height * 0.8,
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-        decoration: const BoxDecoration(
-          color: AppTheme.surfaceDark,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        decoration: BoxDecoration(
+          color: context.surfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -391,14 +471,14 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
               child: Container(
                 width: 40, height: 4,
                 margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: AppTheme.textTertiary, borderRadius: BorderRadius.circular(2)),
+                decoration: BoxDecoration(color: context.textTer, borderRadius: BorderRadius.circular(2)),
               ),
             ),
             Row(
               children: [
                 Expanded(
                   child: Text('$actionLabel — $noteTitle',
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: context.textPri),
                     maxLines: 2, overflow: TextOverflow.ellipsis),
                 ),
                 // Copy
@@ -409,6 +489,14 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                     ScaffoldMessenger.of(ctx).showSnackBar(
                       const SnackBar(content: Text('📋 Copied'), duration: Duration(seconds: 1)),
                     );
+                  },
+                ),
+                // Export As
+                IconButton(
+                  icon: const Icon(Icons.ios_share_rounded, size: 20, color: AppTheme.accentViolet),
+                  tooltip: 'Export As…',
+                  onPressed: () {
+                    _exportNote({'title': '$actionLabel: $noteTitle', 'content': result});
                   },
                 ),
                 // Save as new note
@@ -435,15 +523,13 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
               ],
             ),
             const SizedBox(height: 8),
-            const Divider(color: AppTheme.cardBorder),
+            Divider(color: context.cardBorder),
             const SizedBox(height: 8),
             Expanded(
-              child: SelectionArea(
-                child: Markdown(
-                  data: result,
+              child: SingleChildScrollView(
+                child: RichContentRenderer(
+                  content: result,
                   selectable: true,
-                  padding: EdgeInsets.zero,
-                  styleSheet: AppTheme.markdownStyle,
                 ),
               ),
             ),
@@ -461,9 +547,9 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
       builder: (ctx) => Container(
         height: MediaQuery.of(ctx).size.height * 0.8,
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-        decoration: const BoxDecoration(
-          color: AppTheme.surfaceDark,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        decoration: BoxDecoration(
+          color: context.surfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -472,7 +558,7 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
               child: Container(
                 width: 40, height: 4,
                 margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: AppTheme.textTertiary, borderRadius: BorderRadius.circular(2)),
+                decoration: BoxDecoration(color: context.textTer, borderRadius: BorderRadius.circular(2)),
               ),
             ),
             Row(
@@ -483,12 +569,37 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                 ],
                 Expanded(
                   child: Text(note['title'] ?? 'Untitled',
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: context.textPri)),
                 ),
                 IconButton(icon: const Icon(Icons.copy_rounded, size: 20, color: AppTheme.accentCyan),
                     onPressed: () => _copyNote(note), tooltip: 'Copy'),
-                IconButton(icon: const Icon(Icons.download_rounded, size: 20, color: AppTheme.accentGreen),
-                    onPressed: () => _downloadNote(note), tooltip: 'Download PDF'),
+                IconButton(
+                  icon: const Icon(Icons.ios_share_rounded, size: 20, color: AppTheme.accentViolet),
+                  tooltip: 'Export As…',
+                  onPressed: () => _exportNote(note),
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.download_rounded, size: 20, color: AppTheme.accentGreen),
+                  tooltip: 'Download Note',
+                  color: context.surfaceColor,
+                  onSelected: (action) {
+                    if (action == 'pdf') {
+                      _downloadNote(note, false);
+                    } else if (action == 'doc') _downloadNote(note, true);
+                  },
+                  itemBuilder: (ctx) => [
+                    PopupMenuItem(value: 'pdf', child: Row(children: [
+                      const Icon(Icons.picture_as_pdf_rounded, size: 18, color: Colors.redAccent),
+                      const SizedBox(width: 8),
+                      Text('Download as PDF', style: TextStyle(color: context.textPri)),
+                    ])),
+                    PopupMenuItem(value: 'doc', child: Row(children: [
+                      const Icon(Icons.description_rounded, size: 18, color: Colors.blueAccent),
+                      const SizedBox(width: 8),
+                      Text('Download as DOC', style: TextStyle(color: context.textPri)),
+                    ])),
+                  ],
+                ),
                 IconButton(
                   icon: const Icon(Icons.edit_rounded, color: AppTheme.accentIndigo),
                   onPressed: () {
@@ -500,7 +611,7 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
             ),
             const SizedBox(height: 4),
             Text(_formatDate(note['timestamp']),
-              style: const TextStyle(color: AppTheme.textTertiary, fontSize: 12)),
+              style: TextStyle(color: context.textTer, fontSize: 12)),
             const SizedBox(height: 12),
 
             // ── AI Actions ──
@@ -524,15 +635,13 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
             ),
 
             const SizedBox(height: 12),
-            const Divider(color: AppTheme.cardBorder),
+            Divider(color: context.cardBorder),
             const SizedBox(height: 8),
             Expanded(
-              child: SelectionArea(
-                child: Markdown(
-                  data: note['content'] ?? '',
+              child: SingleChildScrollView(
+                child: RichContentRenderer(
+                  content: note['content'] ?? '',
                   selectable: true,
-                  padding: EdgeInsets.zero,
-                  styleSheet: AppTheme.markdownStyle,
                 ),
               ),
             ),
@@ -598,20 +707,39 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
             ? TextField(
                 controller: _searchController,
                 autofocus: true,
-                style: const TextStyle(color: AppTheme.textPrimary),
-                decoration: const InputDecoration(
+                style: TextStyle(color: context.textPri),
+                decoration: InputDecoration(
                   hintText: 'Search notes...',
                   border: InputBorder.none,
-                  hintStyle: TextStyle(color: AppTheme.textTertiary),
+                  hintStyle: TextStyle(color: context.textTer),
                 ),
               )
             : const Text('Notebook'),
         actions: [
+          if (!_isSearching) const LanguageSelector(),
+          const SizedBox(width: 8),
           if (!_isSearching && _notes.isNotEmpty)
-            IconButton(
+            PopupMenuButton<String>(
               icon: const Icon(Icons.download_rounded, color: AppTheme.accentGreen),
-              onPressed: _downloadAllNotes,
-              tooltip: 'Download all notes as PDF',
+              tooltip: 'Download all notes',
+              color: context.surfaceColor,
+              onSelected: (action) {
+                if (action == 'pdf') {
+                  _downloadAllNotes(false);
+                } else if (action == 'doc') _downloadAllNotes(true);
+              },
+              itemBuilder: (ctx) => [
+                PopupMenuItem(value: 'pdf', child: Row(children: [
+                  const Icon(Icons.picture_as_pdf_rounded, size: 18, color: Colors.redAccent),
+                  const SizedBox(width: 8),
+                  Text('Download All PDF', style: TextStyle(color: context.textPri)),
+                ])),
+                PopupMenuItem(value: 'doc', child: Row(children: [
+                  const Icon(Icons.description_rounded, size: 18, color: Colors.blueAccent),
+                  const SizedBox(width: 8),
+                  Text('Download All DOC', style: TextStyle(color: context.textPri)),
+                ])),
+              ],
             ),
           IconButton(
             icon: Icon(_isSearching ? Icons.close_rounded : Icons.search_rounded),
@@ -648,10 +776,10 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                       label: const Text('All'),
                       selected: _selectedTag == null,
                       selectedColor: AppTheme.accentIndigo.withValues(alpha: 0.2),
-                      backgroundColor: AppTheme.surfaceDark,
+                      backgroundColor: context.surfaceColor,
                       labelStyle: TextStyle(
-                        color: _selectedTag == null ? AppTheme.accentIndigo : AppTheme.textSecondary, fontSize: 13),
-                      side: BorderSide(color: _selectedTag == null ? AppTheme.accentIndigo : AppTheme.cardBorder),
+                        color: _selectedTag == null ? AppTheme.accentIndigo : context.textSec, fontSize: 13),
+                      side: BorderSide(color: _selectedTag == null ? AppTheme.accentIndigo : context.cardBorder),
                       onSelected: (_) {
                         setState(() => _selectedTag = null);
                         _filterNotes();
@@ -667,9 +795,9 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                         label: Text(tag['name'] as String),
                         selected: isSelected,
                         selectedColor: color.withValues(alpha: 0.2),
-                        backgroundColor: AppTheme.surfaceDark,
-                        labelStyle: TextStyle(color: isSelected ? color : AppTheme.textSecondary, fontSize: 13),
-                        side: BorderSide(color: isSelected ? color : AppTheme.cardBorder),
+                        backgroundColor: context.surfaceColor,
+                        labelStyle: TextStyle(color: isSelected ? color : context.textSec, fontSize: 13),
+                        side: BorderSide(color: isSelected ? color : context.cardBorder),
                         onSelected: (_) {
                           setState(() => _selectedTag = isSelected ? null : tag['name'] as String);
                           _filterNotes();
@@ -677,6 +805,25 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                       ),
                     );
                   }),
+                  const SizedBox(width: 8),
+                  Padding(padding: const EdgeInsets.only(right: 8), child: ActionChip(
+                    label: const Text('Make PPTX', style: TextStyle(fontSize: 13, color: AppTheme.accentOrange, fontWeight: FontWeight.w600)),
+                    backgroundColor: AppTheme.accentOrange.withValues(alpha: 0.1),
+                    side: BorderSide(color: AppTheme.accentOrange.withValues(alpha: 0.3)),
+                    onPressed: () => _makeFromNotebook('PPTX', _filteredNotes),
+                  )),
+                  Padding(padding: const EdgeInsets.only(right: 8), child: ActionChip(
+                    label: const Text('Make Slides', style: TextStyle(fontSize: 13, color: AppTheme.accentOrange, fontWeight: FontWeight.w600)),
+                    backgroundColor: AppTheme.accentOrange.withValues(alpha: 0.1),
+                    side: BorderSide(color: AppTheme.accentOrange.withValues(alpha: 0.3)),
+                    onPressed: () => _makeFromNotebook('Slides', _filteredNotes),
+                  )),
+                  Padding(padding: const EdgeInsets.only(right: 8), child: ActionChip(
+                    label: const Text('Make Mind Map', style: TextStyle(fontSize: 13, color: AppTheme.accentOrange, fontWeight: FontWeight.w600)),
+                    backgroundColor: AppTheme.accentOrange.withValues(alpha: 0.1),
+                    side: BorderSide(color: AppTheme.accentOrange.withValues(alpha: 0.3)),
+                    onPressed: () => _makeFromNotebook('Mind Map', _filteredNotes),
+                  )),
                 ],
               ),
             ),
@@ -692,13 +839,13 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                             color: const Color(0xFF26C6DA).withValues(alpha: 0.3)),
                         const SizedBox(height: 16),
                         Text(_notes.isEmpty ? 'Your Notebook is empty' : 'No matching notes',
-                          style: const TextStyle(color: AppTheme.textTertiary, fontSize: 16)),
+                          style: TextStyle(color: context.textTer, fontSize: 16)),
                         const SizedBox(height: 8),
                         Text(
                           _notes.isEmpty
                               ? 'Save study notes, research summaries,\nAI responses, and ideas here'
                               : 'Try a different search or filter',
-                          style: const TextStyle(color: AppTheme.textTertiary, fontSize: 13),
+                          style: TextStyle(color: context.textTer, fontSize: 13),
                           textAlign: TextAlign.center,
                         ),
                       ],
@@ -732,9 +879,9 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                             margin: const EdgeInsets.only(bottom: 12),
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
-                              color: AppTheme.cardDark,
+                              color: context.cardColor,
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: AppTheme.cardBorder),
+                              border: Border.all(color: context.cardBorder),
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -753,18 +900,19 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                                     ],
                                     Expanded(
                                       child: Text(note['title'] ?? 'Untitled',
-                                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: context.textPri),
                                         maxLines: 1, overflow: TextOverflow.ellipsis),
                                     ),
                                     PopupMenuButton<String>(
-                                      icon: const Icon(Icons.more_vert_rounded, color: AppTheme.textTertiary, size: 18),
-                                      color: AppTheme.surfaceDark,
+                                      icon: Icon(Icons.more_vert_rounded, color: context.textTer, size: 18),
+                                      color: context.surfaceColor,
                                       onSelected: (action) {
                                         switch (action) {
                                           case 'pin': _togglePin(realIndex); break;
                                           case 'edit': _showAddNote(existingNote: note, editIndex: realIndex); break;
                                           case 'copy': _copyNote(note); break;
-                                          case 'download': _downloadNote(note); break;
+                                          case 'export': _exportNote(note); break;
+                                          case 'download': _downloadNote(note, false); break;
                                           case 'summarize': _aiAction(note, realIndex, 'summarize'); break;
                                           case 'quiz': _aiAction(note, realIndex, 'quiz'); break;
                                           case 'delete': _deleteNote(realIndex); break;
@@ -772,14 +920,14 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                                       },
                                       itemBuilder: (ctx) => [
                                         PopupMenuItem(value: 'pin', child: Row(children: [
-                                          Icon(isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded, size: 18, color: AppTheme.textSecondary),
+                                          Icon(isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded, size: 18, color: context.textSec),
                                           const SizedBox(width: 8),
-                                          Text(isPinned ? 'Unpin' : 'Pin', style: const TextStyle(color: AppTheme.textPrimary)),
+                                          Text(isPinned ? 'Unpin' : 'Pin', style: TextStyle(color: context.textPri)),
                                         ])),
-                                        const PopupMenuItem(value: 'edit', child: Row(children: [
-                                          Icon(Icons.edit_rounded, size: 18, color: AppTheme.textSecondary),
-                                          SizedBox(width: 8),
-                                          Text('Edit', style: TextStyle(color: AppTheme.textPrimary)),
+                                        PopupMenuItem(value: 'edit', child: Row(children: [
+                                          Icon(Icons.edit_rounded, size: 18, color: context.textSec),
+                                          const SizedBox(width: 8),
+                                          Text('Edit', style: TextStyle(color: context.textPri)),
                                         ])),
                                         const PopupMenuItem(value: 'summarize', child: Row(children: [
                                           Icon(Icons.auto_awesome_rounded, size: 18, color: AppTheme.accentIndigo),
@@ -791,15 +939,20 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                                           SizedBox(width: 8),
                                           Text('AI Quiz', style: TextStyle(color: AppTheme.accentCyan)),
                                         ])),
-                                        const PopupMenuItem(value: 'copy', child: Row(children: [
-                                          Icon(Icons.copy_rounded, size: 18, color: AppTheme.textSecondary),
-                                          SizedBox(width: 8),
-                                          Text('Copy', style: TextStyle(color: AppTheme.textPrimary)),
+                                        PopupMenuItem(value: 'copy', child: Row(children: [
+                                          Icon(Icons.copy_rounded, size: 18, color: context.textSec),
+                                          const SizedBox(width: 8),
+                                          Text('Copy', style: TextStyle(color: context.textPri)),
                                         ])),
-                                        const PopupMenuItem(value: 'download', child: Row(children: [
-                                          Icon(Icons.download_rounded, size: 18, color: AppTheme.accentGreen),
+                                        const PopupMenuItem(value: 'export', child: Row(children: [
+                                          Icon(Icons.ios_share_rounded, size: 18, color: AppTheme.accentViolet),
                                           SizedBox(width: 8),
-                                          Text('Download PDF', style: TextStyle(color: AppTheme.textPrimary)),
+                                          Text('Export As…', style: TextStyle(color: AppTheme.accentViolet)),
+                                        ])),
+                                        PopupMenuItem(value: 'download', child: Row(children: [
+                                          const Icon(Icons.download_rounded, size: 18, color: AppTheme.accentGreen),
+                                          const SizedBox(width: 8),
+                                          Text('Download PDF', style: TextStyle(color: context.textPri)),
                                         ])),
                                         const PopupMenuItem(value: 'delete', child: Row(children: [
                                           Icon(Icons.delete_rounded, size: 18, color: Colors.red),
@@ -814,11 +967,11 @@ class _NotebookScreenState extends ConsumerState<NotebookScreen> {
                                   const SizedBox(height: 8),
                                   Text(note['content'].toString(),
                                     maxLines: 3, overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
+                                    style: TextStyle(color: context.textSec, fontSize: 14, height: 1.5)),
                                 ],
                                 const SizedBox(height: 8),
                                 Text(_formatDate(note['timestamp']),
-                                  style: const TextStyle(fontSize: 11, color: AppTheme.textTertiary)),
+                                  style: TextStyle(fontSize: 11, color: context.textTer)),
                               ],
                             ),
                           ).animate(delay: (80 * index).ms).fadeIn(duration: 300.ms).slideX(begin: 0.05, end: 0),

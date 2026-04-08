@@ -104,7 +104,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
     }
   }
 
-  Future<void> _downloadResult() async {
+  Future<void> _downloadResult(bool asDoc) async {
     final contentToExport = _analysisResult.isNotEmpty
         ? _analysisResult
         : _extractedText;
@@ -120,24 +120,23 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
     try {
       final title =
           'Scan_${_pickedDocument?.name ?? 'Document'}';
-      final path = await PdfExportService.exportAsFile(
-        title: title,
-        content: contentToExport,
-      );
+      final path = asDoc
+          ? await PdfExportService.exportAsDoc(title: title, content: contentToExport)
+          : await PdfExportService.exportAsFile(title: title, content: contentToExport);
 
       if (mounted) {
         setState(() => _isExporting = false);
         if (path != null) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ PDF saved: $path'),
+              content: Text('✅ ${asDoc ? "DOC" : "PDF"} saved: $path'),
               backgroundColor: Colors.green.shade800,
               duration: const Duration(seconds: 4),
             ),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('❌ Could not save file')),
+            SnackBar(content: Text('❌ Could not save ${asDoc ? "DOC" : "PDF"}')),
           );
         }
       }
@@ -221,18 +220,37 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
               icon: const Icon(Icons.copy_rounded, color: AppTheme.accentCyan),
               tooltip: 'Copy all',
             ),
-            IconButton(
-              onPressed: _isExporting ? null : _downloadResult,
-              icon: _isExporting
-                  ? const SizedBox(
+            _isExporting
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 14),
+                    child: SizedBox(
                       width: 20, height: 20,
                       child: CircularProgressIndicator(
                         strokeWidth: 2, color: AppTheme.accentGreen),
-                    )
-                  : const Icon(Icons.download_rounded,
-                      color: AppTheme.accentGreen),
-              tooltip: 'Download PDF',
-            ),
+                    ),
+                  )
+                : PopupMenuButton<String>(
+                    icon: const Icon(Icons.download_rounded, color: AppTheme.accentGreen),
+                    tooltip: 'Download Scanned Content',
+                    color: AppTheme.surface,
+                    onSelected: (action) {
+                      if (action == 'pdf') {
+                        _downloadResult(false);
+                      } else if (action == 'doc') _downloadResult(true);
+                    },
+                    itemBuilder: (ctx) => [
+                      const PopupMenuItem(value: 'pdf', child: Row(children: [
+                        Icon(Icons.picture_as_pdf_rounded, size: 18, color: Colors.redAccent),
+                        SizedBox(width: 8),
+                        Text('Download as PDF', style: TextStyle(color: AppTheme.textPrimary)),
+                      ])),
+                      const PopupMenuItem(value: 'doc', child: Row(children: [
+                        Icon(Icons.description_rounded, size: 18, color: Colors.blueAccent),
+                        SizedBox(width: 8),
+                        Text('Download as DOC', style: TextStyle(color: AppTheme.textPrimary)),
+                      ])),
+                    ],
+                  ),
           ],
         ],
       ),
@@ -247,12 +265,12 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
               child: Container(
                 height: 200,
                 decoration: BoxDecoration(
-                  color: AppTheme.surfaceDark,
+                  color: AppTheme.card,
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: _pickedDocument != null
-                        ? AppTheme.accentIndigo.withValues(alpha: 0.5)
-                        : AppTheme.cardBorder,
+                        ? AppTheme.accentCyan.withOpacity(0.6)
+                        : AppTheme.accentIndigo.withOpacity(0.3),
                     width: 2,
                     strokeAlign: BorderSide.strokeAlignInside,
                   ),
@@ -265,7 +283,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                             padding: const EdgeInsets.all(20),
                             decoration: BoxDecoration(
                               color:
-                                  AppTheme.accentCyan.withValues(alpha: 0.1),
+                                  AppTheme.accentCyan.withOpacity(0.15),
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(
@@ -351,7 +369,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: AppTheme.cardDark,
+                  color: AppTheme.card,
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: AppTheme.cardBorder),
                 ),
@@ -378,9 +396,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppTheme.cardDark,
+                  color: AppTheme.card,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppTheme.cardBorder),
+                  border: Border.all(color: AppTheme.accentGreen.withOpacity(0.3)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -429,24 +447,25 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
 
             if (_extractedText.isNotEmpty) const SizedBox(height: 12),
 
-            // Analyze with AI button
+            // Analyze with AI button — filled bright style for visibility
             if (_pickedDocument != null && _extractedText.isNotEmpty)
               SizedBox(
                 height: 48,
-                child: OutlinedButton.icon(
+                child: ElevatedButton.icon(
                   onPressed: _isAnalyzing ? null : _analyzeWithAI,
                   icon: _isAnalyzing
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
                         )
-                      : const Icon(Icons.auto_awesome_rounded),
+                      : const Icon(Icons.auto_awesome_rounded, color: Colors.black),
                   label: Text(
-                      _isAnalyzing ? 'Analyzing...' : 'Analyze with AI'),
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: AppTheme.accentCyan),
-                    foregroundColor: AppTheme.accentCyan,
+                      _isAnalyzing ? 'Analyzing...' : 'Analyze with AI',
+                      style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w700)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.accentCyan,
+                    disabledBackgroundColor: AppTheme.accentCyan.withOpacity(0.4),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14),
                     ),
@@ -490,8 +509,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                           ),
                         ),
                         // Download button inline
-                        IconButton(
-                          onPressed: _isExporting ? null : _downloadResult,
+                        PopupMenuButton<String>(
                           icon: _isExporting
                               ? const SizedBox(
                                   width: 16,
@@ -504,7 +522,25 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                               : const Icon(Icons.download_rounded,
                                   size: 20, color: AppTheme.accentGreen),
                           tooltip: 'Download result',
-                          visualDensity: VisualDensity.compact,
+                          color: AppTheme.surface,
+                          enabled: !_isExporting,
+                          onSelected: (action) {
+                            if (action == 'pdf') {
+                              _downloadResult(false);
+                            } else if (action == 'doc') _downloadResult(true);
+                          },
+                          itemBuilder: (ctx) => [
+                            const PopupMenuItem(value: 'pdf', child: Row(children: [
+                              Icon(Icons.picture_as_pdf_rounded, size: 18, color: Colors.redAccent),
+                              SizedBox(width: 8),
+                              Text('Download as PDF', style: TextStyle(color: AppTheme.textPrimary)),
+                            ])),
+                            const PopupMenuItem(value: 'doc', child: Row(children: [
+                              Icon(Icons.description_rounded, size: 18, color: Colors.blueAccent),
+                              SizedBox(width: 8),
+                              Text('Download as DOC', style: TextStyle(color: AppTheme.textPrimary)),
+                            ])),
+                          ],
                         ),
                       ],
                     ),
@@ -512,7 +548,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                     SelectionArea(
                       child: MarkdownBody(
                         data: _analysisResult,
-                        selectable: true,
                         styleSheet: MarkdownStyleSheet(
                           p: const TextStyle(
                             color: AppTheme.textPrimary,
@@ -546,18 +581,27 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
-                  color: AppTheme.surfaceDark,
+                  color: AppTheme.card,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppTheme.cardBorder),
+                  border: Border.all(color: AppTheme.accentIndigo.withOpacity(0.3)),
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     isExpanded: true,
                     hint: const Text('Save to Knowledge Base...',
-                        style: TextStyle(color: AppTheme.textTertiary)),
-                    value: _selectedKb,
-                    dropdownColor: AppTheme.surfaceDark,
-                    items: kbState.knowledgeBases.map((kb) {
+                        style: TextStyle(color: AppTheme.textSecondary)),
+                    value: (_selectedKb != null && kbState.knowledgeBases.any((kb) => kb['name']?.toString() == _selectedKb)) 
+                        ? _selectedKb 
+                        : null,
+                    dropdownColor: AppTheme.card,
+                    icon: const Icon(Icons.arrow_drop_down, color: AppTheme.accentIndigo),
+                    items: kbState.knowledgeBases.fold<Map<String, Map<String, dynamic>>>({}, (map, kb) {
+                      final name = kb['name']?.toString() ?? 'Unknown';
+                      if (!map.containsKey(name)) {
+                        map[name] = kb;
+                      }
+                      return map;
+                    }).values.map((kb) {
                       final name =
                           kb['name']?.toString() ?? 'Unknown';
                       return DropdownMenuItem(
@@ -585,6 +629,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                           ? _uploadToKB
                           : null,
                   style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.accentGreen,
+                    foregroundColor: Colors.black,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14),
                     ),

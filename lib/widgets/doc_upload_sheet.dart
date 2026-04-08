@@ -18,7 +18,7 @@ class DocUploadSheet extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
       decoration: const BoxDecoration(
-        color: AppTheme.surfaceDark,
+        color: AppTheme.surface,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         border: Border(
           top: BorderSide(color: AppTheme.cardBorder),
@@ -26,91 +26,93 @@ class DocUploadSheet extends StatelessWidget {
           right: BorderSide(color: AppTheme.cardBorder),
         ),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Handle bar
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 20),
-            decoration: BoxDecoration(
-              color: AppTheme.textTertiary,
-              borderRadius: BorderRadius.circular(2),
+      // ⚡ SingleChildScrollView prevents RenderFlex overflow on small screens
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: AppTheme.textTertiary,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
 
-          const Text(
-            'Upload Document',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textPrimary,
+            const Text(
+              'Upload Document',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Choose how to add your document',
-            style: TextStyle(
-              fontSize: 14,
-              color: AppTheme.textSecondary,
+            const SizedBox(height: 8),
+            const Text(
+              'Choose how to add your document',
+              style: TextStyle(
+                fontSize: 14,
+                color: AppTheme.textSecondary,
+              ),
             ),
-          ),
-          const SizedBox(height: 24),
+            const SizedBox(height: 24),
 
-          // Pick file option
-          _UploadOption(
-            icon: Icons.description_rounded,
-            title: 'Pick File',
-            subtitle: 'PDF, TXT, MD, DOC files',
-            color: AppTheme.accentIndigo,
-            index: 0,
-            onTap: () async {
-              final doc = await docService.pickDocument();
-              if (doc != null && context.mounted) {
-                Navigator.pop(context);
-                onDocumentPicked(doc);
-              }
-            },
-          ),
-          const SizedBox(height: 12),
-
-          // Pick multiple files
-          _UploadOption(
-            icon: Icons.folder_open_rounded,
-            title: 'Pick Multiple Files',
-            subtitle: 'Upload several documents at once',
-            color: AppTheme.accentCyan,
-            index: 1,
-            onTap: () async {
-              final docs = await docService.pickMultipleDocuments();
-              if (docs.isNotEmpty && context.mounted) {
-                Navigator.pop(context);
-                // Upload the first one for now, the caller can handle multiple
-                onDocumentPicked(docs.first);
-              }
-            },
-          ),
-          
-          if (docService.isCameraAvailable) ...[
-            const SizedBox(height: 12),
-            // Take Photo option
+            // Pick file option
             _UploadOption(
-              icon: Icons.camera_alt_rounded,
-              title: 'Take Photo',
-              subtitle: 'Use camera to scan a document',
-              color: AppTheme.accentOrange,
-              index: 2,
+              icon: Icons.description_rounded,
+              title: 'Pick File',
+              subtitle: 'PDF, TXT, MD, DOC files',
+              color: AppTheme.accentIndigo,
+              index: 0,
               onTap: () async {
-                final doc = await docService.takePhoto();
+                final doc = await docService.pickDocument();
                 if (doc != null && context.mounted) {
                   Navigator.pop(context);
                   onDocumentPicked(doc);
                 }
               },
             ),
+            const SizedBox(height: 12),
+
+            // Pick multiple files
+            _UploadOption(
+              icon: Icons.folder_open_rounded,
+              title: 'Pick Multiple Files',
+              subtitle: 'Upload several documents at once',
+              color: AppTheme.accentCyan,
+              index: 1,
+              onTap: () async {
+                final docs = await docService.pickMultipleDocuments();
+                if (docs.isNotEmpty && context.mounted) {
+                  Navigator.pop(context);
+                  onDocumentPicked(docs.first);
+                }
+              },
+            ),
+            
+            if (docService.isCameraAvailable) ...[
+              const SizedBox(height: 12),
+              // Take Photo option
+              _UploadOption(
+                icon: Icons.camera_alt_rounded,
+                title: 'Take Photo',
+                subtitle: 'Use camera to scan a document',
+                color: AppTheme.accentOrange,
+                index: 2,
+                onTap: () async {
+                  final doc = await docService.takePhoto();
+                  if (doc != null && context.mounted) {
+                    Navigator.pop(context);
+                    onDocumentPicked(doc);
+                  }
+                },
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }

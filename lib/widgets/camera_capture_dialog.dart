@@ -102,7 +102,7 @@ class _CameraCaptureDialogState extends State<_CameraCaptureDialog> {
       child: Container(
         constraints: const BoxConstraints(maxWidth: 600, maxHeight: 700),
         decoration: BoxDecoration(
-          color: AppTheme.surfaceDark,
+          color: AppTheme.surface,
           borderRadius: BorderRadius.circular(24),
           border: Border.all(color: AppTheme.cardBorder),
         ),

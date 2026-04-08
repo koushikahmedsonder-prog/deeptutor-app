@@ -5,7 +5,20 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../config/app_theme.dart';
 import '../providers/api_provider.dart';
 import '../providers/knowledge_provider.dart';
-import '../services/pdf_export_service.dart';
+import '../widgets/rich_content_renderer.dart';
+import '../widgets/language_selector.dart';
+import '../widgets/export_sheet.dart';
+
+
+extension ThemeHelper on BuildContext {
+  bool get isDark => Theme.of(this).brightness == Brightness.dark;
+  Color get scaffoldBg => isDark ? AppTheme.darkPrimary : AppTheme.primary;
+  Color get surfaceColor => isDark ? AppTheme.darkSurface : AppTheme.surface;
+  Color get cardBorder => isDark ? AppTheme.darkCardBorder : AppTheme.cardBorder;
+  Color get textPri => isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
+  Color get textSec => isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary;
+  Color get textTer => isDark ? AppTheme.darkTextTertiary : AppTheme.textTertiary;
+}
 
 class QuestionGenScreen extends ConsumerStatefulWidget {
   const QuestionGenScreen({super.key});
@@ -18,7 +31,6 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
   final _topicController = TextEditingController();
   int _questionCount = 5;
   bool _isGenerating = false;
-  bool _isExporting = false;
   List<Map<String, dynamic>> _questions = [];
   final Set<int> _expandedIndices = {};
 
@@ -74,52 +86,6 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
     }
   }
 
-  Future<void> _downloadQuestions() async {
-    if (_questions.isEmpty) return;
-    setState(() => _isExporting = true);
-    try {
-      final buffer = StringBuffer();
-      buffer.writeln('# Generated Questions\n');
-      buffer.writeln('**Topic:** ${_topicController.text.trim()}\n');
-      buffer.writeln('---\n');
-
-      for (int i = 0; i < _questions.length; i++) {
-        final q = _questions[i];
-        buffer.writeln('## Question ${i + 1}\n');
-        buffer.writeln('${q['question'] ?? ''}\n');
-        buffer.writeln('**Answer:**\n');
-        buffer.writeln('${q['answer'] ?? 'N/A'}\n');
-        buffer.writeln('---\n');
-      }
-
-      final topic = _topicController.text.trim();
-      final path = await PdfExportService.exportAsFile(
-        title: 'Questions_${topic.isEmpty ? "Generated" : topic}',
-        content: buffer.toString(),
-      );
-
-      if (mounted) {
-        setState(() => _isExporting = false);
-        if (path != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✅ PDF saved: $path'),
-              backgroundColor: Colors.green.shade800,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isExporting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export error: $e')),
-        );
-      }
-    }
-  }
-
   void _copyQuestion(String question, String answer) {
     Clipboard.setData(ClipboardData(text: 'Q: $question\nA: $answer'));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -138,18 +104,22 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
       appBar: AppBar(
         title: const Text('Question Generator'),
         actions: [
+          const LanguageSelector(),
+          const SizedBox(width: 8),
           if (_questions.isNotEmpty) ...[
             IconButton(
-              onPressed: _isExporting ? null : _downloadQuestions,
-              icon: _isExporting
-                  ? const SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2, color: AppTheme.accentGreen),
-                    )
-                  : const Icon(Icons.download_rounded,
-                      color: AppTheme.accentGreen),
-              tooltip: 'Download PDF',
+              icon: Icon(Icons.auto_awesome_rounded, color: AppTheme.accentGreen),
+              tooltip: 'Export AI Assets (Slides, Mind Map, etc.)',
+              onPressed: () {
+                final buffer = StringBuffer();
+                buffer.writeln('# AI Generated Questions\n');
+                for (final q in _questions) {
+                  buffer.writeln('## Q: ${q['question']}');
+                  buffer.writeln('A: ${q['answer']}');
+                  buffer.writeln('\n---\n');
+                }
+                showExportSheet(context, ref.read(apiServiceProvider), 'AI Generated Questions', buffer.toString());
+              },
             ),
           ],
         ],
@@ -165,9 +135,9 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   decoration: BoxDecoration(
-                    color: AppTheme.surfaceDark,
+                    color: context.surfaceColor,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppTheme.cardBorder),
+                    border: Border.all(color: context.cardBorder),
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
@@ -176,37 +146,42 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                         kbState.knowledgeBases.isEmpty
                             ? 'No KBs — questions from general knowledge'
                             : 'Select Knowledge Base (optional)',
-                        style:
-                            const TextStyle(color: AppTheme.textTertiary),
+                        style: TextStyle(color: context.textTer),
                       ),
-                      value: kbState.selectedKb,
-                      dropdownColor: AppTheme.surfaceDark,
+                      value: (kbState.selectedKb != null && kbState.knowledgeBases.any((kb) => kb['name']?.toString() == kbState.selectedKb)) 
+                          ? kbState.selectedKb 
+                          : null,
+                      dropdownColor: context.surfaceColor,
                       items: [
-                        const DropdownMenuItem<String>(
+                        DropdownMenuItem<String>(
                           value: null,
                           child: Text('None (General knowledge)',
-                              style:
-                                  TextStyle(color: AppTheme.textSecondary)),
+                              style: TextStyle(color: context.textSec)),
                         ),
-                        ...kbState.knowledgeBases.map((kb) {
+                        ...kbState.knowledgeBases.fold<Map<String, Map<String, dynamic>>>({}, (map, kb) {
+                          final name = kb['name']?.toString() ?? 'Unknown';
+                          if (!map.containsKey(name)) {
+                            map[name] = kb;
+                          }
+                          return map;
+                        }).values.map((kb) {
                           final name = kb['name']?.toString() ?? 'Unknown';
                           final docCount = kb['doc_count'] ?? 0;
                           return DropdownMenuItem(
                             value: name,
                             child: Row(
                               children: [
-                                const Icon(Icons.folder_rounded,
+                                Icon(Icons.folder_rounded,
                                     size: 16,
                                     color: AppTheme.accentViolet),
-                                const SizedBox(width: 8),
+                                SizedBox(width: 8),
                                 Expanded(
                                   child: Text(name,
-                                      style: const TextStyle(
-                                          color: AppTheme.textPrimary)),
+                                      style: TextStyle(color: context.textPri)),
                                 ),
                                 Text('$docCount docs',
-                                    style: const TextStyle(
-                                        color: AppTheme.textTertiary,
+                                    style: TextStyle(
+                                        color: context.textTer,
                                         fontSize: 12)),
                               ],
                             ),
@@ -219,29 +194,30 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                SizedBox(height: 12),
 
                 // Topic input
                 TextField(
                   controller: _topicController,
-                  style: const TextStyle(color: AppTheme.textPrimary),
+                  style: TextStyle(color: context.textPri),
                   decoration: InputDecoration(
                     hintText: 'Enter topic (e.g., Neural Networks)',
-                    prefixIcon: const Icon(Icons.topic_rounded,
-                        color: AppTheme.textTertiary),
+                    hintStyle: TextStyle(color: context.textTer),
+                    prefixIcon: Icon(Icons.topic_rounded,
+                        color: context.textTer),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                SizedBox(height: 12),
 
                 // Count selector
                 Row(
                   children: [
-                    const Text('Questions:',
-                        style: TextStyle(color: AppTheme.textSecondary)),
-                    const SizedBox(width: 12),
+                    Text('Questions:',
+                        style: TextStyle(color: context.textSec)),
+                    SizedBox(width: 12),
                     ...List.generate(4, (i) {
                       final count = [3, 5, 10, 15][i];
                       final isSelected = _questionCount == count;
@@ -252,16 +228,16 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                           selected: isSelected,
                           selectedColor:
                               AppTheme.accentIndigo.withValues(alpha: 0.3),
-                          backgroundColor: AppTheme.surfaceDark,
+                          backgroundColor: context.surfaceColor,
                           labelStyle: TextStyle(
                             color: isSelected
                                 ? AppTheme.accentIndigo
-                                : AppTheme.textSecondary,
+                                : context.textSec,
                           ),
                           side: BorderSide(
                             color: isSelected
                                 ? AppTheme.accentIndigo
-                                : AppTheme.cardBorder,
+                                : context.cardBorder,
                           ),
                           onSelected: (_) =>
                               setState(() => _questionCount = count),
@@ -270,7 +246,7 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                     }),
                   ],
                 ),
-                const SizedBox(height: 16),
+                SizedBox(height: 16),
 
                 // Generate button
                 SizedBox(
@@ -279,12 +255,12 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                   child: ElevatedButton.icon(
                     onPressed: _isGenerating ? null : _generateQuestions,
                     icon: _isGenerating
-                        ? const SizedBox(
+                        ? SizedBox(
                             width: 18, height: 18,
                             child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white),
+                              strokeWidth: 2, color: context.textPri),
                           )
-                        : const Icon(Icons.auto_awesome_rounded),
+                        : Icon(Icons.auto_awesome_rounded),
                     label:
                         Text(_isGenerating ? 'Generating...' : 'Generate'),
                   ),
@@ -304,17 +280,17 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                             size: 64,
                             color: AppTheme.accentGreen
                                 .withValues(alpha: 0.3)),
-                        const SizedBox(height: 16),
-                        const Text(
+                        SizedBox(height: 16),
+                        Text(
                           'No questions generated yet',
                           style: TextStyle(
-                              color: AppTheme.textTertiary, fontSize: 16),
+                              color: context.textTer, fontSize: 16),
                         ),
-                        const SizedBox(height: 8),
-                        const Text(
+                        SizedBox(height: 8),
+                        Text(
                           'Enter a topic and tap Generate',
                           style: TextStyle(
-                              color: AppTheme.textTertiary, fontSize: 13),
+                              color: context.textTer, fontSize: 13),
                         ),
                       ],
                     ),
@@ -331,9 +307,9 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                       return Container(
                         margin: const EdgeInsets.only(bottom: 10),
                         decoration: BoxDecoration(
-                          color: AppTheme.cardDark,
+                          color: context.surfaceColor,
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: AppTheme.cardBorder),
+                          border: Border.all(color: context.cardBorder),
                         ),
                         child: Column(
                           children: [
@@ -357,20 +333,30 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                                   ),
                                 ),
                               ),
-                              title: SelectableText(
-                                question,
-                                style: const TextStyle(
-                                  color: AppTheme.textPrimary,
-                                  fontSize: 14,
-                                ),
+                              title: RichContentRenderer(
+                                content: question,
+                                selectable: true,
                               ),
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   IconButton(
-                                    icon: const Icon(Icons.copy_rounded,
+                                    icon: Icon(Icons.delete_outline_rounded,
                                         size: 16,
-                                        color: AppTheme.textTertiary),
+                                        color: Colors.redAccent),
+                                    onPressed: () {
+                                      setState(() {
+                                        _questions.removeAt(index);
+                                        _expandedIndices.remove(index);
+                                      });
+                                    },
+                                    tooltip: 'Delete Question',
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                  IconButton(
+                                    icon: Icon(Icons.copy_rounded,
+                                        size: 16,
+                                        color: context.textTer),
                                     onPressed: () =>
                                         _copyQuestion(question, answer),
                                     tooltip: 'Copy Q&A',
@@ -381,7 +367,7 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                                       isExpanded
                                           ? Icons.expand_less_rounded
                                           : Icons.expand_more_rounded,
-                                      color: AppTheme.textTertiary,
+                                      color: context.textTer,
                                     ),
                                     onPressed: () {
                                       setState(() {
@@ -413,13 +399,9 @@ class _QuestionGenScreenState extends ConsumerState<QuestionGenScreen> {
                                           .withValues(alpha: 0.2),
                                     ),
                                   ),
-                                  child: SelectableText(
-                                    answer,
-                                    style: const TextStyle(
-                                      color: AppTheme.textSecondary,
-                                      fontSize: 14,
-                                      height: 1.5,
-                                    ),
+                                  child: RichContentRenderer(
+                                    content: answer,
+                                    selectable: true,
                                   ),
                                 ),
                               ),

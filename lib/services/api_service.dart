@@ -3,15 +3,28 @@ import 'package:dio/dio.dart';
 import '../config/models_config.dart';
 import 'document_service.dart';
 import 'deeptutor_prompts.dart';
+import 'duckduckgo_service.dart';
 
 class ApiService {
   late final Dio _dio;
-  String _apiKey;
+  Map<String, String> _apiKeys;
   LLMModel _model;
+  bool _autoFallback;
+  final String _preferredLanguage;
 
-  ApiService({required String apiKey, required LLMModel model})
-      : _apiKey = apiKey,
-        _model = model {
+  /// Track the last model actually used (may differ from _model if fallback occurred)
+  LLMModel? _lastUsedModel;
+  LLMModel? get lastUsedModel => _lastUsedModel;
+
+  ApiService({
+    required Map<String, String> apiKeys,
+    required LLMModel model,
+    bool autoFallback = true,
+    String preferredLanguage = 'English',
+  })  : _apiKeys = apiKeys,
+        _model = model,
+        _autoFallback = autoFallback,
+        _preferredLanguage = preferredLanguage {
     _dio = Dio(BaseOptions(
       connectTimeout: const Duration(seconds: 30),
       receiveTimeout: const Duration(seconds: 120),
@@ -21,54 +34,219 @@ class ApiService {
     ));
   }
 
-  void updateApiKey(String key) => _apiKey = key;
+  void updateApiKeys(Map<String, String> keys) => _apiKeys = keys;
+  void updateApiKey(String key) {
+    _apiKeys[_model.providerKey] = key;
+  }
   void updateModel(LLMModel model) => _model = model;
+  void updateAutoFallback(bool enabled) => _autoFallback = enabled;
 
-  String get apiKey => _apiKey;
+  String get apiKey => _apiKeys[_model.providerKey] ?? '';
   LLMModel get currentModel => _model;
-  bool get hasApiKey => _apiKey.isNotEmpty;
+  bool get hasApiKey => apiKey.isNotEmpty;
 
-  // ── Unified call method — routes to the correct provider ──
+  /// Get API key for a specific provider
+  String _getApiKey(AIProvider provider) {
+    return _apiKeys[provider.name] ?? '';
+  }
+
+  // ── Unified call method — routes to the correct provider with auto-fallback ──
   Future<String> callLLM({
     required String prompt,
     String? systemInstruction,
     LLMModel? modelOverride,
     PickedDocument? attachment,
     bool useWebSearch = false,
+    int? maxTokens,
   }) async {
-    final model = modelOverride ?? _model;
+    LLMModel model = modelOverride ?? _model;
+    String finalPrompt = prompt;
 
-    if (_apiKey.isEmpty) {
-      throw ApiException(
-          'No API key configured. Add your ${model.providerName} API key in Settings.');
+    // Apply language constraint if missing
+    String finalSystemInstruction = systemInstruction ?? '';
+    if (_preferredLanguage != 'English') {
+      finalSystemInstruction += '\n\nCRITICAL INSTRUCTION: You MUST generate your response entirely in $_preferredLanguage language.';
+      // We also enforce it slightly on the prompt so basic models understand.
+      finalPrompt = '[RESPOND STRICTLY IN $_preferredLanguage] $finalPrompt';
     }
 
+    // ⚡ Custom DuckDuckGo Web Search for explicit grounding!
+    if (useWebSearch) {
+      print('🦆 Web Search requested on ${model.name}. Fetching search results...');
+      final searchResults = await DuckDuckGoService.search(prompt);
+      if (searchResults.isNotEmpty) {
+        finalPrompt = '$searchResults\n\nUser Question: $prompt';
+      }
+    }
+
+    final key = _getApiKey(model.provider);
+
+    if (key.isEmpty) {
+      // If auto-fallback, try to find any provider with a key
+      if (_autoFallback) {
+        final fallback = _findAnyAvailableModel();
+        if (fallback != null) {
+          return _callWithFallback(
+            prompt: finalPrompt,
+            systemInstruction: finalSystemInstruction,
+            model: fallback,
+            attachment: attachment,
+            useWebSearch: useWebSearch,
+            maxTokens: maxTokens,
+          );
+        }
+      }
+      throw ApiException(
+          'No API key configured. [Get your free ${model.providerName} API key](${model.apiKeyUrl}) and add it in Settings.');
+    }
+
+    return _callWithFallback(
+      prompt: finalPrompt,
+      systemInstruction: finalSystemInstruction,
+      model: model,
+      attachment: attachment,
+      useWebSearch: useWebSearch,
+      maxTokens: maxTokens,
+    );
+  }
+
+  /// Call with auto-fallback on rate limit / token exhaustion
+  Future<String> _callWithFallback({
+    required String prompt,
+    String? systemInstruction,
+    required LLMModel model,
+    PickedDocument? attachment,
+    bool useWebSearch = false,
+    int? maxTokens,
+    int retryCount = 0,
+    Set<String>? triedModels,
+  }) async {
+    final currentlyTried = triedModels ?? {model.name};
+    currentlyTried.add(model.name);
+
+    try {
+      final result = await _executeCall(
+        prompt: prompt,
+        systemInstruction: systemInstruction,
+        model: model,
+        attachment: attachment,
+        useWebSearch: useWebSearch,
+        maxTokens: maxTokens,
+      );
+      _lastUsedModel = model;
+      return result;
+    } catch (e) {
+      // Check if this is a rate-limit, quota, or model not found error that we can fall back from
+      if (_autoFallback && retryCount < 3 && _isFallbackableError(e)) {
+        final fallbackModel = _findFallbackModel(model, currentlyTried);
+        if (fallbackModel != null) {
+          print('⚡ Auto-fallback: ${model.name} → ${fallbackModel.name} (error...)');
+          return _callWithFallback(
+            prompt: prompt,
+            systemInstruction: systemInstruction,
+            model: fallbackModel,
+            attachment: attachment,
+            useWebSearch: useWebSearch,
+            maxTokens: maxTokens,
+            retryCount: retryCount + 1,
+            triedModels: currentlyTried,
+          );
+        }
+      }
+      rethrow;
+    }
+  }
+
+  /// Check if error is a rate-limit, quota exhaustion, or model not found error
+  bool _isFallbackableError(Object e) {
+    if (e is ApiException) {
+      final msg = e.message.toLowerCase();
+      return msg.contains('rate limit') ||
+          msg.contains('429') ||
+          msg.contains('quota') ||
+          msg.contains('tokens') ||
+          msg.contains('exceeded') ||
+          msg.contains('too many requests') ||
+          msg.contains('resource_exhausted') ||
+          msg.contains('model not found') ||
+          msg.contains('404') ||
+          msg.contains('invalid argument');
+    }
+    if (e is DioException) {
+      return e.response?.statusCode == 429 || e.response?.statusCode == 404 || e.response?.statusCode == 400;
+    }
+    return false;
+  }
+
+  /// Find a fallback model — first try same provider (lower tier), then cross-provider
+  LLMModel? _findFallbackModel(LLMModel current, Set<String> triedModels) {
+    // 1. Try same provider, next tier down
+    final sameProvider = availableModels
+        .where((m) =>
+            m.provider == current.provider &&
+            !triedModels.contains(m.name) &&
+            m.tier >= current.tier &&
+            _getApiKey(m.provider).isNotEmpty)
+        .toList()
+      ..sort((a, b) => a.tier.compareTo(b.tier));
+
+    if (sameProvider.isNotEmpty) return sameProvider.first;
+
+    // 2. Try any other provider that has a key
+    final crossProvider = availableModels
+        .where((m) =>
+            m.provider != current.provider &&
+            !triedModels.contains(m.name) &&
+            _getApiKey(m.provider).isNotEmpty)
+        .toList()
+      ..sort((a, b) => a.tier.compareTo(b.tier));
+
+    if (crossProvider.isNotEmpty) return crossProvider.first;
+
+    return null;
+  }
+
+  /// Find any model that has an API key
+  LLMModel? _findAnyAvailableModel() {
+    for (final model in availableModels) {
+      if (_getApiKey(model.provider).isNotEmpty) {
+        return model;
+      }
+    }
+    return null;
+  }
+
+  /// Execute the actual API call — routes to the correct provider
+  Future<String> _executeCall({
+    required String prompt,
+    String? systemInstruction,
+    required LLMModel model,
+    PickedDocument? attachment,
+    bool useWebSearch = false,
+    int? maxTokens,
+  }) async {
     // ── Pre-extract text from non-image documents
-    // Gemini handles images & PDFs natively via inlineData.
-    // Claude and OpenAI receive all content as text in the prompt.
     String enrichedPrompt = prompt;
-    PickedDocument? imageAttachment; // Only populated for image types
+    PickedDocument? imageAttachment;
 
     if (attachment != null) {
       if (attachment.type == DocumentType.image) {
-        // Images are forwarded as-is to Gemini; for others, encode as base64 text summary
         if (model.provider == AIProvider.gemini) {
           imageAttachment = attachment;
         } else {
-          // For Claude / OpenAI we just mention the image (no vision support via this code path)
-          enrichedPrompt = '$prompt\n\n[User attached an image: ${attachment.name}]';
+          // Send base64 marker directly into the prompt for OpenAI vision extraction
+          final extractedMarker = await attachment.readContent();
+          enrichedPrompt = '$prompt\n\n$extractedMarker';
         }
       } else {
-        // PDF / DOC / TXT — extract text and inject into prompt for ALL providers
         final extractedText = await attachment.readContent();
         enrichedPrompt =
             '$prompt\n\n---\n**Attached document: ${attachment.name}**\n$extractedText\n---';
 
-        // Gemini also gets the raw PDF bytes for higher-quality parsing on top of text
         if (model.provider == AIProvider.gemini &&
             attachment.type == DocumentType.pdf &&
             attachment.bytes != null) {
-          imageAttachment = attachment; // reuse field to pass PDF bytes to _callGemini
+          imageAttachment = attachment;
         }
       }
     }
@@ -80,17 +258,20 @@ class ApiService {
           model: model,
           attachment: imageAttachment,
           useWebSearch: useWebSearch,
+          maxTokens: maxTokens,
         ),
       AIProvider.anthropic => _callAnthropic(
           prompt: enrichedPrompt,
           systemInstruction: systemInstruction,
           model: model,
+          maxTokens: maxTokens,
         ),
-      // OpenAI, DeepSeek, Groq all use OpenAI-compatible API
+      // OpenAI, DeepSeek, Groq, Cerebras, SambaNova all use OpenAI-compatible API
       _ => _callOpenAICompatible(
           prompt: enrichedPrompt,
           systemInstruction: systemInstruction,
           model: model,
+          maxTokens: maxTokens,
         ),
     };
   }
@@ -102,26 +283,24 @@ class ApiService {
     required LLMModel model,
     PickedDocument? attachment,
     bool useWebSearch = false,
+    int? maxTokens,
   }) async {
+    final key = _getApiKey(model.provider);
     final url =
-        'https://generativelanguage.googleapis.com/v1beta/models/${model.model}:generateContent?key=$_apiKey';
+        'https://generativelanguage.googleapis.com/v1beta/models/${model.model}:generateContent?key=$key';
 
     final contents = <Map<String, dynamic>>[];
-
-    // Build the user parts
     final userParts = <Map<String, dynamic>>[];
 
-    // User prompt is ONLY the user's text — system instruction goes separately
     userParts.add({'text': prompt});
 
-    // Add attachment if present and contains bytes (only image + PDF for Gemini inline)
     if (attachment != null && attachment.bytes != null) {
       if (attachment.type == DocumentType.image) {
-        // Determine mimetype
         String mimeType = 'image/jpeg';
         final pathLower = attachment.path.toLowerCase();
-        if (pathLower.endsWith('.png')) mimeType = 'image/png';
-        else if (pathLower.endsWith('.webp')) mimeType = 'image/webp';
+        if (pathLower.endsWith('.png')) {
+          mimeType = 'image/png';
+        } else if (pathLower.endsWith('.webp')) mimeType = 'image/webp';
         else if (pathLower.endsWith('.gif')) mimeType = 'image/gif';
 
         userParts.add({
@@ -131,7 +310,6 @@ class ApiService {
           }
         });
       } else if (attachment.type == DocumentType.pdf) {
-        // Native Gemini PDF parsing via inlineData
         userParts.add({
           'inlineData': {
             'mimeType': 'application/pdf',
@@ -139,7 +317,6 @@ class ApiService {
           }
         });
       }
-      // Text/doc attachment text is already injected into the prompt by callLLM
     }
 
     contents.add({
@@ -151,9 +328,6 @@ class ApiService {
       final response = await _dio.post(
         url,
         data: {
-          // ── Proper Gemini system_instruction field ──
-          // This is the official way to set system behaviour.
-          // Gemini strongly respects this vs text mixed into user content.
           if (systemInstruction != null && systemInstruction.isNotEmpty)
             'system_instruction': {
               'parts': [
@@ -164,12 +338,12 @@ class ApiService {
           if (useWebSearch)
             'tools': [
               {
-                'google_search': {}
+                'googleSearch': {}
               }
             ],
           'generationConfig': {
             'temperature': 0.7,
-            'maxOutputTokens': 8192,
+            'maxOutputTokens': maxTokens ?? 8192,
           },
         },
       );
@@ -222,37 +396,66 @@ class ApiService {
       }
     } on DioException catch (e) {
       _handleDioError(e, 'Gemini');
-      rethrow; // unreachable, _handleDioError always throws
     }
   }
 
-  // ── OpenAI-compatible API (OpenAI, DeepSeek, Groq) ──
+  // ── OpenAI-compatible API (OpenAI, DeepSeek, Groq, Cerebras, SambaNova) ──
   Future<String> _callOpenAICompatible({
     required String prompt,
     String? systemInstruction,
     required LLMModel model,
+    int? maxTokens,
   }) async {
+    final key = _getApiKey(model.provider);
     final url = '${model.baseUrl}/chat/completions';
 
-    final messages = <Map<String, String>>[];
+    final messages = <dynamic>[];
     if (systemInstruction != null && systemInstruction.isNotEmpty) {
       messages.add({'role': 'system', 'content': systemInstruction});
     }
-    messages.add({'role': 'user', 'content': prompt});
+
+    // Detect BASE64_IMAGE marker for Vision APIs
+    final imageRegex = RegExp(r'\[BASE64_IMAGE:([^:]+):([^\]]+)\]');
+    final match = imageRegex.firstMatch(prompt);
+
+    if (match != null) {
+      final mimeType = match.group(1)!;
+      final base64Data = match.group(2)!;
+      final cleanPrompt = prompt.replaceAll(match.group(0)!, '').trim();
+
+      messages.add({
+        'role': 'user',
+        'content': [
+          if (cleanPrompt.isNotEmpty)
+            {
+              'type': 'text',
+              'text': cleanPrompt,
+            },
+          {
+            'type': 'image_url',
+            'image_url': {
+              'url': 'data:$mimeType;base64,$base64Data'
+            }
+          }
+        ]
+      });
+    } else {
+      messages.add({'role': 'user', 'content': prompt});
+    }
 
     try {
       final response = await _dio.post(
         url,
         options: Options(
           headers: {
-            'Authorization': 'Bearer $_apiKey',
+            'Authorization': 'Bearer $key',
           },
         ),
         data: {
           'model': model.model,
           'messages': messages,
           'temperature': 0.7,
-          'max_tokens': 8192,
+          'max_tokens': ?maxTokens,
         },
       );
 
@@ -270,16 +473,16 @@ class ApiService {
       }
     } on DioException catch (e) {
       _handleDioError(e, model.providerName);
-      rethrow;
     }
   }
 
-  // ── Anthropic Claude API ──
   Future<String> _callAnthropic({
     required String prompt,
     String? systemInstruction,
     required LLMModel model,
+    int? maxTokens,
   }) async {
+    final key = _getApiKey(model.provider);
     const url = 'https://api.anthropic.com/v1/messages';
 
     final messages = <Map<String, String>>[];
@@ -290,16 +493,17 @@ class ApiService {
         url,
         options: Options(
           headers: {
-            'x-api-key': _apiKey,
+            'x-api-key': key,
             'anthropic-version': '2023-06-01',
           },
         ),
         data: {
           'model': model.model,
-          'max_tokens': 8192,
-          'messages': messages,
+          'max_tokens': maxTokens ?? 4096,
           if (systemInstruction != null && systemInstruction.isNotEmpty)
             'system': systemInstruction,
+          'messages': messages,
+          'temperature': 0.7,
         },
       );
 
@@ -316,7 +520,6 @@ class ApiService {
       }
     } on DioException catch (e) {
       _handleDioError(e, 'Claude');
-      rethrow;
     }
   }
 
@@ -348,6 +551,33 @@ class ApiService {
   /// Test API key with a simple request
   Future<String> testConnection() async {
     return callLLM(prompt: 'Say "OK" in one word.');
+  }
+
+  /// General chat question without structured solver requirements
+  Future<String> chatQuestion({
+    required String question,
+    PickedDocument? attachment,
+    bool useWebSearch = false,
+  }) async {
+    String systemPrompt = '''
+You are DeepTutor, a helpful, intelligent learning assistant.
+Provide clear, accurate, and concise answers directly addressing the user's prompt, behaving like a smart search engine or conversational tutor.
+Use rich markdown formatting (bold, bullet points, simple headers) to make the answer highly readable.
+Use LaTeX for math or science formulas when appropriate.
+If the question is conversational, provide a conversational answer.
+DO NOT use the elaborate "Concept Map", "Problem Analysis", or "Solution Strategy" structures. Just answer the question directly.
+''';
+
+    if (useWebSearch) {
+      systemPrompt += '\n\nYour connection to Google Search is enabled. Use it to fetch the most recent and relevant information.';
+    }
+
+    return callLLM(
+      prompt: question,
+      systemInstruction: systemPrompt,
+      attachment: attachment,
+      useWebSearch: useWebSearch,
+    );
   }
 
   /// Solve a question using KB context
@@ -394,11 +624,30 @@ class ApiService {
 
     try {
       String jsonStr = response.trim();
-      if (jsonStr.startsWith('```')) {
-        jsonStr = jsonStr.replaceAll(RegExp(r'^```\w*\n?'), '');
-        jsonStr = jsonStr.replaceAll(RegExp(r'\n?```$'), '');
+      print('=== GEMINI RAW ===\n$jsonStr\n=== END ===');
+      
+      if (jsonStr.startsWith('```json')) {
+        jsonStr = jsonStr.substring(7);
+        if (jsonStr.endsWith('```')) {
+          jsonStr = jsonStr.substring(0, jsonStr.length - 3);
+        }
+      } else if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replaceFirst(RegExp(r'^```[a-zA-Z]*'), '');
+        if (jsonStr.endsWith('```')) {
+          jsonStr = jsonStr.substring(0, jsonStr.length - 3);
+        }
       }
+      
       jsonStr = jsonStr.trim();
+      if (jsonStr.startsWith('[') && jsonStr.lastIndexOf(']') != -1) {
+        jsonStr = jsonStr.substring(jsonStr.indexOf('['), jsonStr.lastIndexOf(']') + 1);
+      }
+      
+      // Fix trailing commas which dart:convert rejects
+      jsonStr = jsonStr.replaceAll(RegExp(r',\s*}'), '}');
+      jsonStr = jsonStr.replaceAll(RegExp(r',\s*]'), ']');
+      
+      print('=== GEMINI PARSED ===\n$jsonStr\n=== END ===');
 
       final parsed = jsonDecode(jsonStr);
       if (parsed is List) {
@@ -407,7 +656,8 @@ class ApiService {
           return {'question': q.toString(), 'answer': 'N/A'};
         }).toList();
       }
-    } catch (_) {
+    } catch (e) {
+      print('=== JSON ERROR ===\n$e\n==================');
       return [
         {'question': topic, 'answer': response}
       ];
@@ -428,9 +678,65 @@ class ApiService {
       _ => 'Decide the appropriate depth based on the complexity of the topic.',
     };
 
+    // Step 1: Ask AI to decompose topic into subtopics
+    final decompositionPrompt = '''
+Break this research topic into 4 specific search queries for web research.
+Topic: $topic
+
+CRITICAL: Return ONLY a raw JSON array of 4 search query strings. Do not include markdown formatting, backticks, or introduction text. Example exactly like this:
+["query 1", "query 2", "query 3", "query 4"]
+''';
+
+    final raw = await callLLM(prompt: decompositionPrompt);
+    List<String> queries;
+    try {
+      String jsonStr = raw.trim();
+      if (jsonStr.startsWith('```json')) {
+        jsonStr = jsonStr.substring(7);
+        if (jsonStr.endsWith('```')) jsonStr = jsonStr.substring(0, jsonStr.length - 3);
+      } else if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.substring(3);
+        if (jsonStr.endsWith('```')) jsonStr = jsonStr.substring(0, jsonStr.length - 3);
+      }
+      jsonStr = jsonStr.trim();
+      if (jsonStr.startsWith('[') && jsonStr.lastIndexOf(']') != -1) {
+        jsonStr = jsonStr.substring(jsonStr.indexOf('['), jsonStr.lastIndexOf(']') + 1);
+      }
+      queries = (jsonDecode(jsonStr) as List).cast<String>();
+      if (queries.isEmpty) queries = [topic];
+    } catch (e) {
+      print('🦆 Decomposition parse error: $e. Using original topic.');
+      queries = [topic];
+    }
+
+    // Step 2: Search all subtopics in parallel
+    print('🦆 Deep Research searching subtopics: $queries');
+    final futures = queries.map((q) => DuckDuckGoService.searchWithContent(q));
+    final results = await Future.wait(futures);
+
+    // Step 3: Combine all research
+    final combinedResearch = results
+      .asMap()
+      .entries
+      .map((e) => '## Subtopic ${e.key + 1}: ${queries[e.key]}\n${e.value}')
+      .join('\n\n');
+
+    final enrichedPrompt = '''
+      Research Topic: $topic
+      
+      $depthInstruction
+      
+      REAL WEB RESEARCH DATA (use this as your primary source):
+      $combinedResearch
+      
+      Write a comprehensive deep research report using ONLY 
+      the above data. Cite real URLs from the sources above.
+    ''';
+
     return callLLM(
-      prompt: 'Conduct in-depth research on the following topic.\n\nTopic: $topic\n\n$depthInstruction',
+      prompt: enrichedPrompt,
       systemInstruction: DeepTutorPrompts.deepResearch,
+      maxTokens: 4000,
     );
   }
 

@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../config/app_theme.dart';
-import '../providers/chat_provider.dart';
-import '../providers/knowledge_provider.dart';
-import '../services/document_service.dart';
-import '../services/pdf_export_service.dart';
-import '../widgets/chat_bubble.dart';
+import '../utils/theme_helper.dart';
+import '../providers/solver_provider.dart';
 
+import '../providers/knowledge_provider.dart';
+import '../providers/api_provider.dart';
+import '../services/document_service.dart';
+import '../widgets/chat_bubble.dart';
+import '../widgets/language_selector.dart';
+import '../widgets/export_sheet.dart';
 class SolverScreen extends ConsumerStatefulWidget {
   const SolverScreen({super.key});
 
@@ -21,7 +23,6 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   final _docService = DocumentService();
-  bool _isExporting = false;
   bool _useWebSearch = true;
   PickedDocument? _attachment;
 
@@ -37,7 +38,7 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          duration: Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
@@ -63,7 +64,7 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
   void _showAttachOptions() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppTheme.surfaceDark,
+      backgroundColor: AppTheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -80,10 +81,10 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                     color: AppTheme.accentIndigo.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(Icons.file_open_rounded, color: AppTheme.accentIndigo),
+                  child: Icon(Icons.file_open_rounded, color: AppTheme.accentIndigo),
                 ),
-                title: const Text('Upload File', style: TextStyle(color: AppTheme.textPrimary)),
-                subtitle: const Text('PDF, Doc, TXT, Image', style: TextStyle(color: AppTheme.textTertiary, fontSize: 12)),
+                title: Text('Upload File', style: TextStyle(color: context.textPri)),
+                subtitle: Text('PDF, Doc, TXT, Image', style: TextStyle(color: context.textTer, fontSize: 12)),
                 onTap: () { Navigator.pop(ctx); _pickFile(); },
               ),
               if (_docService.isCameraAvailable)
@@ -94,10 +95,10 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                       color: AppTheme.accentCyan.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(Icons.camera_alt_rounded, color: AppTheme.accentCyan),
+                    child: Icon(Icons.camera_alt_rounded, color: AppTheme.accentCyan),
                   ),
-                  title: const Text('Take Photo', style: TextStyle(color: AppTheme.textPrimary)),
-                  subtitle: const Text('Capture with camera', style: TextStyle(color: AppTheme.textTertiary, fontSize: 12)),
+                  title: Text('Take Photo', style: TextStyle(color: context.textPri)),
+                  subtitle: Text('Capture with camera', style: TextStyle(color: context.textTer, fontSize: 12)),
                   onTap: () { Navigator.pop(ctx); _takePhoto(); },
                 ),
             ],
@@ -117,129 +118,114 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
 
     final promptText = text.isNotEmpty ? text : 'Analyze this ${attachment?.name ?? "file"}';
 
-    if (kb == null || kb.isEmpty) {
-      ref.read(chatProvider.notifier).sendGeneralQuestion(promptText, attachment: attachment, useWebSearch: useSearch);
-    } else {
-      ref.read(chatProvider.notifier).sendQuestion(kb, promptText, attachment: attachment, useWebSearch: useSearch);
-    }
+    ref.read(solverProvider.notifier).sendSolverQuestion(
+      promptText,
+      kbName: kb,
+      attachment: attachment,
+      useWebSearch: useSearch,
+    );
     _controller.clear();
     setState(() => _attachment = null);
     _scrollToBottom();
   }
 
-  Future<void> _downloadChat() async {
-    final chatState = ref.read(chatProvider);
-    if (chatState.messages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No messages to download')),
-      );
-      return;
-    }
 
-    setState(() => _isExporting = true);
-
-    final buffer = StringBuffer();
-    for (final msg in chatState.messages) {
-      if (msg.isUser) {
-        buffer.writeln('## 🧑 You\n');
-        buffer.writeln(msg.content);
-        buffer.writeln();
-      } else {
-        buffer.writeln('## 🤖 AI Solver\n');
-        buffer.writeln(msg.content);
-        buffer.writeln();
-      }
-      buffer.writeln('---\n');
-    }
-
-    try {
-      final path = await PdfExportService.exportAsFile(
-        title: 'AI_Solver_Chat',
-        content: buffer.toString(),
-      );
-
-      if (mounted) {
-        setState(() => _isExporting = false);
-        if (path != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✅ PDF saved: $path'),
-              backgroundColor: Colors.green.shade800,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('❌ Could not save file')),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isExporting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export error: $e')),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
-    final chatState = ref.watch(chatProvider);
+    final chatState = ref.watch(solverProvider);
     final kbState = ref.watch(knowledgeProvider);
 
     if (chatState.messages.isNotEmpty) {
       _scrollToBottom();
     }
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textPri = isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
+
+    final textTer = isDark ? AppTheme.darkTextTertiary : AppTheme.textTertiary;
+    final surfaceColor = isDark ? AppTheme.darkSurface : AppTheme.surface;
+    final borderColor = isDark ? AppTheme.darkCardBorder : AppTheme.cardBorder;
+    final scaffoldBg = isDark ? AppTheme.darkPrimary : AppTheme.primary;
+
+    final isMobile = MediaQuery.of(context).size.width < 600;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('AI Solver'),
-        actions: [
-          if (chatState.messages.isNotEmpty)
-            IconButton(
-              onPressed: () {
-                final buffer = StringBuffer();
-                for (final msg in chatState.messages) {
-                  buffer.writeln(msg.isUser ? 'You: ${msg.content}' : 'AI: ${msg.content}');
-                  buffer.writeln();
-                }
-                Clipboard.setData(ClipboardData(text: buffer.toString()));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('📋 Copied to clipboard'), duration: Duration(seconds: 2)),
-                );
-              },
-              icon: const Icon(Icons.copy_rounded, color: AppTheme.accentCyan),
-              tooltip: 'Copy all',
-            ),
-          if (chatState.messages.isNotEmpty)
-            IconButton(
-              onPressed: _isExporting ? null : _downloadChat,
-              icon: _isExporting
-                  ? const SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accentGreen),
-                    )
-                  : const Icon(Icons.download_rounded, color: AppTheme.accentGreen),
-              tooltip: 'Download chat',
-            ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline_rounded),
-            onPressed: () => ref.read(chatProvider.notifier).clearChat(),
-          ),
-        ],
-      ),
+      backgroundColor: scaffoldBg,
       body: Column(
         children: [
+          // ── Header Bar ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: surfaceColor,
+              border: Border(bottom: BorderSide(color: borderColor, width: 1)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.psychology_rounded, size: 22, color: AppTheme.accentViolet),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Deep Solve',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: textPri),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const LanguageSelector(),
+                if (chatState.messages.isNotEmpty) ...[
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () {
+                      final buffer = StringBuffer();
+                      for (final msg in chatState.messages) {
+                        buffer.writeln(msg.isUser ? 'You: ${msg.content}' : 'AI: ${msg.content}');
+                        buffer.writeln();
+                      }
+                      Clipboard.setData(ClipboardData(text: buffer.toString()));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('📋 Copied to clipboard'), duration: Duration(seconds: 2)),
+                      );
+                    },
+                    icon: Icon(Icons.copy_rounded, color: AppTheme.accentCyan, size: 20),
+                    tooltip: 'Copy all',
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(Icons.auto_awesome_rounded, color: AppTheme.accentGreen, size: 20),
+                    tooltip: 'Export AI Assets',
+                    onPressed: () {
+                      final buffer = StringBuffer();
+                      for (final msg in chatState.messages) {
+                        buffer.writeln(msg.isUser ? '## You\n' : '## AI Solver\n');
+                        buffer.writeln(msg.content);
+                        buffer.writeln('\n---\n');
+                      }
+                      showExportSheet(context, ref.read(apiServiceProvider), 'Deep Solve Session', buffer.toString());
+                    },
+                  ),
+                ],
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.delete_outline_rounded, size: 20, color: textTer),
+                  onPressed: () => ref.read(solverProvider.notifier).clearChat(),
+                  tooltip: 'Clear',
+                ),
+              ],
+            ),
+          ),
           // KB Selector
           Container(
             margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
             padding: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
-              color: AppTheme.surfaceDark,
+              color: context.surfaceColor,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppTheme.cardBorder),
+              border: Border.all(color: context.cardBorder),
             ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
@@ -248,29 +234,38 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                   kbState.knowledgeBases.isEmpty
                       ? 'No KBs yet — ask general questions'
                       : 'Select Knowledge Base (optional)',
-                  style: const TextStyle(color: AppTheme.textTertiary),
+                  style: TextStyle(color: context.textTer),
                 ),
-                value: kbState.selectedKb,
-                dropdownColor: AppTheme.surfaceDark,
+                value: (kbState.selectedKb != null && kbState.knowledgeBases.any((kb) => kb['name']?.toString() == kbState.selectedKb)) 
+                    ? kbState.selectedKb 
+                    : null,
+                dropdownColor: context.surfaceColor,
                 items: [
-                  const DropdownMenuItem<String>(
+                  DropdownMenuItem<String>(
                     value: null,
                     child: Text('None (General mode)',
-                        style: TextStyle(color: AppTheme.textSecondary)),
+                        style: TextStyle(color: context.textSec)),
                   ),
-                  ...kbState.knowledgeBases.map((kb) {
+                  ...kbState.knowledgeBases.fold<Map<String, Map<String, dynamic>>>({}, (map, kb) {
+                    final name = kb['name']?.toString() ?? 'Unknown';
+                    // Deduplicate by name to prevent "2 or more items" error
+                    if (!map.containsKey(name)) {
+                      map[name] = kb;
+                    }
+                    return map;
+                  }).values.map((kb) {
                     final name = kb['name']?.toString() ?? 'Unknown';
                     final docCount = kb['doc_count'] ?? 0;
                     return DropdownMenuItem(
                       value: name,
                       child: Row(
                         children: [
-                          const Icon(Icons.folder_rounded, size: 16, color: AppTheme.accentViolet),
-                          const SizedBox(width: 8),
+                          Icon(Icons.folder_rounded, size: 16, color: AppTheme.accentViolet),
+                          SizedBox(width: 8),
                           Expanded(
-                            child: Text(name, style: const TextStyle(color: AppTheme.textPrimary)),
+                            child: Text(name, style: TextStyle(color: context.textPri)),
                           ),
-                          Text('$docCount docs', style: const TextStyle(color: AppTheme.textTertiary, fontSize: 12)),
+                          Text('$docCount docs', style: TextStyle(color: context.textTer, fontSize: 12)),
                         ],
                       ),
                     );
@@ -290,28 +285,30 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                       children: [
                         Icon(Icons.psychology_rounded, size: 64,
                             color: AppTheme.accentIndigo.withValues(alpha: 0.3)),
-                        const SizedBox(height: 16),
-                        const Text('Ask a question to get started',
-                          style: TextStyle(color: AppTheme.textTertiary, fontSize: 16)),
-                        const SizedBox(height: 8),
+                        SizedBox(height: 16),
+                        Text('Ask a question to get started',
+                          style: TextStyle(color: context.textTer, fontSize: 16)),
+                        SizedBox(height: 8),
                         Text(
                           kbState.knowledgeBases.isEmpty
                               ? 'You can ask general questions, or create a KB first'
                               : 'Select a Knowledge Base for context-aware answers',
-                          style: const TextStyle(color: AppTheme.textTertiary, fontSize: 13),
+                          style: TextStyle(color: context.textTer, fontSize: 13),
                           textAlign: TextAlign.center,
                         ),
                       ],
                     ).animate().fadeIn(duration: 600.ms),
                   )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    itemCount: chatState.messages.length,
-                    itemBuilder: (context, index) {
-                      final msg = chatState.messages[index];
-                      return ChatBubble(message: msg, index: index);
-                    },
+                : SelectionArea(
+                    child: ListView.builder(
+                      controller: _scrollController,
+                      padding: EdgeInsets.symmetric(horizontal: isMobile ? 8 : 16, vertical: 8),
+                      itemCount: chatState.messages.length,
+                      itemBuilder: (context, index) {
+                        final msg = chatState.messages[index];
+                        return ChatBubble(message: msg, index: index);
+                      },
+                    ),
                   ),
           ),
 
@@ -333,22 +330,22 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                       child: Image.memory(_attachment!.bytes!, width: 40, height: 40, fit: BoxFit.cover),
                     )
                   else
-                    Text(_attachment!.icon, style: const TextStyle(fontSize: 24)),
-                  const SizedBox(width: 10),
+                    Text(_attachment!.icon, style: TextStyle(fontSize: 24)),
+                  SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(_attachment!.name,
-                          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w500),
+                          style: TextStyle(color: context.textPri, fontSize: 13, fontWeight: FontWeight.w500),
                           maxLines: 1, overflow: TextOverflow.ellipsis),
                         Text(_attachment!.sizeFormatted,
-                          style: const TextStyle(color: AppTheme.textTertiary, fontSize: 11)),
+                          style: TextStyle(color: context.textTer, fontSize: 11)),
                       ],
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close_rounded, size: 18, color: AppTheme.textSecondary),
+                    icon: Icon(Icons.close_rounded, size: 18, color: context.textSec),
                     onPressed: _removeAttachment,
                     visualDensity: VisualDensity.compact,
                   ),
@@ -359,9 +356,9 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
           // Input bar
           Container(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            decoration: const BoxDecoration(
-              color: AppTheme.surfaceDark,
-              border: Border(top: BorderSide(color: AppTheme.cardBorder)),
+            decoration: BoxDecoration(
+              color: context.surfaceColor,
+              border: Border(top: BorderSide(color: context.cardBorder)),
             ),
             child: SafeArea(
               top: false,
@@ -379,7 +376,7 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                           shape: BoxShape.circle,
                           color: _attachment != null
                               ? AppTheme.accentIndigo.withValues(alpha: 0.15)
-                              : AppTheme.cardDark,
+                              : context.surfaceColor,
                           border: Border.all(
                             color: _attachment != null
                                 ? AppTheme.accentIndigo.withValues(alpha: 0.5)
@@ -404,7 +401,7 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                         margin: const EdgeInsets.only(right: 8),
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _useWebSearch ? AppTheme.accentCyan.withValues(alpha: 0.15) : AppTheme.cardDark,
+                          color: _useWebSearch ? AppTheme.accentCyan.withValues(alpha: 0.15) : context.surfaceColor,
                           border: Border.all(
                             color: _useWebSearch ? AppTheme.accentCyan.withValues(alpha: 0.5) : AppTheme.cardBorder,
                           ),
@@ -422,23 +419,23 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                       controller: _controller,
                       maxLines: 3,
                       minLines: 1,
-                      style: const TextStyle(color: AppTheme.textPrimary),
+                      style: TextStyle(color: context.textPri),
                       decoration: InputDecoration(
-                        hintText: _attachment != null ? 'Ask about this file...' : 'Ask a question...',
+                        filled: true, fillColor: context.scaffoldBg, hintText: _attachment != null ? 'Ask about this file...' : 'Ask a question...',
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(16),
-                          borderSide: const BorderSide(color: AppTheme.cardBorder),
+                          borderSide: BorderSide(color: context.cardBorder),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(16),
-                          borderSide: const BorderSide(color: AppTheme.cardBorder),
+                          borderSide: BorderSide(color: context.cardBorder),
                         ),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       ),
                       onSubmitted: (_) => _sendMessage(),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  SizedBox(width: 10),
                   Container(
                     decoration: BoxDecoration(
                       gradient: AppTheme.primaryGradient,
@@ -447,11 +444,11 @@ class _SolverScreenState extends ConsumerState<SolverScreen> {
                     child: IconButton(
                       onPressed: chatState.isLoading ? null : _sendMessage,
                       icon: chatState.isLoading
-                          ? const SizedBox(
+                          ? SizedBox(
                               width: 20, height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              child: CircularProgressIndicator(strokeWidth: 2, color: context.textPri),
                             )
-                          : const Icon(Icons.send_rounded, color: Colors.white),
+                          : Icon(Icons.send_rounded, color: context.textPri),
                     ),
                   ),
                 ],

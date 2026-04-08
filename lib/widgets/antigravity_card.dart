@@ -32,7 +32,7 @@ class AntigravityCard extends StatelessWidget {
             end: Alignment.bottomRight,
             colors: [
               accentColor.withValues(alpha: 0.18),
-              AppTheme.cardDark,
+              AppTheme.card,
             ],
           ),
           border: Border.all(
@@ -48,31 +48,31 @@ class AntigravityCard extends StatelessWidget {
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 5),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                padding: const EdgeInsets.all(6),
+                padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
                   color: accentColor.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
                   icon,
                   color: accentColor,
-                  size: 14,
+                  size: 20,
                 ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               Text(
                 title,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 9,
+                  fontSize: 10,
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary,
-                  height: 1.2,
+                  height: 1.15,
                 ),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,

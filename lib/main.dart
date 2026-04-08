@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'config/app_theme.dart';
 import 'providers/settings_provider.dart';
 import 'services/storage_service.dart';
+import 'widgets/app_shell.dart';
 import 'screens/home_screen.dart';
 import 'screens/solver_screen.dart';
 import 'screens/knowledge_screen.dart';
@@ -16,19 +17,26 @@ import 'screens/ideagen_screen.dart';
 import 'screens/notebook_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/todo_screen.dart';
+import 'screens/prediction_screen.dart';
 import 'services/document_service.dart';
+
+import 'widgets/app_restarter.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await StorageService.init();
-  final prefs = await SharedPreferences.getInstance();
+  final results = await Future.wait([
+    StorageService.init(),
+    SharedPreferences.getInstance(),
+  ]);
+  final prefs = results[1] as SharedPreferences;
+
 
   runApp(
     ProviderScope(
       overrides: [
         sharedPreferencesProvider.overrideWithValue(prefs),
       ],
-      child: const DeepTutorApp(),
+      child: const AppRestarter(child: DeepTutorApp()),
     ),
   );
 }
@@ -36,18 +44,58 @@ void main() async {
 final _router = GoRouter(
   initialLocation: '/',
   routes: [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const HomeScreen(),
+    // ── Sidebar-wrapped routes via ShellRoute ──
+    ShellRoute(
+      builder: (context, state, child) {
+        return AppShell(
+          currentRoute: state.uri.path,
+          child: child,
+        );
+      },
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const HomeScreen(),
+        ),
+        GoRoute(
+          path: '/solver',
+          builder: (context, state) => const SolverScreen(),
+        ),
+        GoRoute(
+          path: '/knowledge',
+          builder: (context, state) => const KnowledgeScreen(),
+        ),
+        GoRoute(
+          path: '/questions',
+          builder: (context, state) => const QuestionGenScreen(),
+        ),
+        GoRoute(
+          path: '/research',
+          builder: (context, state) => const ResearchScreen(),
+        ),
+        GoRoute(
+          path: '/ideagen',
+          builder: (context, state) => const IdeagenScreen(),
+        ),
+        GoRoute(
+          path: '/notebook',
+          builder: (context, state) => const NotebookScreen(),
+        ),
+        GoRoute(
+          path: '/settings',
+          builder: (context, state) => const SettingsScreen(),
+        ),
+        GoRoute(
+          path: '/todo',
+          builder: (context, state) => const TodoScreen(),
+        ),
+        GoRoute(
+          path: '/predict',
+          builder: (context, state) => const PredictionScreen(),
+        ),
+      ],
     ),
-    GoRoute(
-      path: '/solver',
-      builder: (context, state) => const SolverScreen(),
-    ),
-    GoRoute(
-      path: '/knowledge',
-      builder: (context, state) => const KnowledgeScreen(),
-    ),
+    // ── Full-screen routes (no sidebar) ──
     GoRoute(
       path: '/camera',
       builder: (context, state) {
@@ -55,43 +103,36 @@ final _router = GoRouter(
         return CameraScreen(initialDocument: initialDoc);
       },
     ),
-    GoRoute(
-      path: '/questions',
-      builder: (context, state) => const QuestionGenScreen(),
-    ),
-    GoRoute(
-      path: '/research',
-      builder: (context, state) => const ResearchScreen(),
-    ),
-    GoRoute(
-      path: '/ideagen',
-      builder: (context, state) => const IdeagenScreen(),
-    ),
-    GoRoute(
-      path: '/notebook',
-      builder: (context, state) => const NotebookScreen(),
-    ),
-    GoRoute(
-      path: '/settings',
-      builder: (context, state) => const SettingsScreen(),
-    ),
-    GoRoute(
-      path: '/todo',
-      builder: (context, state) => const TodoScreen(),
-    ),
   ],
 );
 
-class DeepTutorApp extends StatelessWidget {
+class DeepTutorApp extends ConsumerWidget {
   const DeepTutorApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isDarkMode = ref.watch(settingsProvider.select((s) => s.isDarkMode));
+
     return MaterialApp.router(
       title: 'DeepTutor',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.darkTheme,
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
       routerConfig: _router,
+      builder: (context, child) {
+        return Material(
+          color: Colors.black, // Use the app's dark background color
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: child ?? const SizedBox.shrink(),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import '../config/app_theme.dart';
 import '../providers/api_provider.dart';
 import '../services/pdf_export_service.dart';
+import '../widgets/rich_content_renderer.dart';
+import '../widgets/language_selector.dart';
 
 class IdeagenScreen extends ConsumerStatefulWidget {
   const IdeagenScreen({super.key});
@@ -60,21 +61,21 @@ class _IdeagenScreenState extends ConsumerState<IdeagenScreen> {
     }
   }
 
-  Future<void> _downloadResult() async {
+  Future<void> _downloadResult(bool asDoc) async {
     if (_result.isEmpty) return;
     setState(() => _isExporting = true);
     try {
       final topic = _topicController.text.trim();
-      final path = await PdfExportService.exportAsFile(
-        title: 'Ideas_${topic.isEmpty ? "Generated" : topic}',
-        content: _result,
-      );
+      final title = 'Ideas_${topic.isEmpty ? "Generated" : topic}';
+      final path = asDoc
+          ? await PdfExportService.exportAsDoc(title: title, content: _result)
+          : await PdfExportService.exportAsFile(title: title, content: _result);
       if (mounted) {
         setState(() => _isExporting = false);
         if (path != null) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ PDF saved: $path'),
+              content: Text('✅ ${asDoc ? "DOC" : "PDF"} saved: $path'),
               backgroundColor: Colors.green.shade800,
               duration: const Duration(seconds: 4),
             ),
@@ -108,24 +109,45 @@ class _IdeagenScreenState extends ConsumerState<IdeagenScreen> {
       appBar: AppBar(
         title: const Text('Idea Generator'),
         actions: [
+          const LanguageSelector(),
+          const SizedBox(width: 8),
           if (_result.isNotEmpty) ...[
             IconButton(
               onPressed: _copyResult,
               icon: const Icon(Icons.copy_rounded, color: AppTheme.accentCyan),
               tooltip: 'Copy all',
             ),
-            IconButton(
-              onPressed: _isExporting ? null : _downloadResult,
-              icon: _isExporting
-                  ? const SizedBox(
+            _isExporting
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 14),
+                    child: SizedBox(
                       width: 20, height: 20,
                       child: CircularProgressIndicator(
                         strokeWidth: 2, color: AppTheme.accentGreen),
-                    )
-                  : const Icon(Icons.download_rounded,
-                      color: AppTheme.accentGreen),
-              tooltip: 'Download PDF',
-            ),
+                    ),
+                  )
+                : PopupMenuButton<String>(
+                    icon: const Icon(Icons.download_rounded, color: AppTheme.accentGreen),
+                    tooltip: 'Download Generated Ideas',
+                    color: AppTheme.surface,
+                    onSelected: (action) {
+                      if (action == 'pdf') {
+                        _downloadResult(false);
+                      } else if (action == 'doc') _downloadResult(true);
+                    },
+                    itemBuilder: (ctx) => [
+                      const PopupMenuItem(value: 'pdf', child: Row(children: [
+                        Icon(Icons.picture_as_pdf_rounded, size: 18, color: Colors.redAccent),
+                        SizedBox(width: 8),
+                        Text('Download as PDF', style: TextStyle(color: AppTheme.textPrimary)),
+                      ])),
+                      const PopupMenuItem(value: 'doc', child: Row(children: [
+                        Icon(Icons.description_rounded, size: 18, color: Colors.blueAccent),
+                        SizedBox(width: 8),
+                        Text('Download as DOC', style: TextStyle(color: AppTheme.textPrimary)),
+                      ])),
+                    ],
+                  ),
           ],
         ],
       ),
@@ -208,12 +230,11 @@ class _IdeagenScreenState extends ConsumerState<IdeagenScreen> {
                       ],
                     ),
                   )
-                : SelectionArea(
-                    child: Markdown(
-                      data: _result,
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: RichContentRenderer(
+                      content: _result,
                       selectable: true,
-                      padding: const EdgeInsets.all(16),
-                      styleSheet: AppTheme.markdownStyle,
                     ).animate().fadeIn(duration: 400.ms),
                   ),
           ),
